@@ -34,11 +34,12 @@ The system follows a layered architecture built on Kubernetes primitives. Each l
 │                      Data Plane                                  │
 │  ┌────────────────────────────────────────────────────────────┐  │
 │  │  Sandbox Pods                                              │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐     │  │
-│  │  │ Sandbox  │ │ Sandbox  │ │ Sandbox  │ │ Sandbox  │     │  │
-│  │  │  + Agent │ │  + Agent │ │  + Agent │ │  + Agent │     │  │
-│  │  │  + PV    │ │  + PV    │ │  + PV    │ │  + PV    │     │  │
-│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘     │  │
+│  │  ┌────────────────────────┐ ┌────────────────────────┐    │  │
+│  │  │ Sandbox Agent SDK      │ │ Sandbox Agent SDK      │    │  │
+│  │  │  + Bridge Sidecar (Go) │ │  + Bridge Sidecar (Go) │    │  │
+│  │  │  + Agent Process       │ │  + Agent Process       │    │  │
+│  │  │  + PV                  │ │  + PV                  │    │  │
+│  │  └────────────────────────┘ └────────────────────────┘    │  │
 │  └────────────────────────────────────────────────────────────┘  │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -75,17 +76,13 @@ All operators are written in Go using [controller-runtime](https://github.com/ku
 | **Pool Controller** | `Pool` CRs | Autoscales sandboxes based on demand and pool configuration |
 
 ### Harness Registry
-A configuration store mapping agent types to their harness implementations. Each harness defines:
-- Container image(s) required
-- Startup command and health check
-- Session protocol (how to send prompts and receive events)
-- Resource requirements
+A configuration store (`HarnessConfig` CRs) mapping agent types to their container images and configuration. Each entry specifies the Sandbox Agent SDK version and bridge sidecar image for that agent type. See [spec 06](06-agent-harness-interface.md) for details.
 
 ### Data Plane
 The data plane consists of sandbox pods running actual agent workloads. Each sandbox pod contains:
 - **Init container**: Sets up the working directory (clone repo, restore cache)
-- **Agent container**: Runs the harness + agent binary
-- **Sidecar container** (optional): Runs the session proxy for event streaming and credential injection
+- **Sandbox Agent SDK container**: Runs the [Sandbox Agent SDK](https://sandboxagent.dev/) (Rust binary), which manages the agent process (Claude Code, Codex, Pi, etc.) and exposes an HTTP API for session control, process management, and filesystem operations
+- **Bridge sidecar container** (Go): Connects the SDK to the control plane — forwards events to NATS, manages credential injection, updates K8s CRD status
 
 ### Event Bus
 NATS JetStream provides durable, ordered event delivery for:
@@ -131,8 +128,8 @@ We chose NATS because it is a CNCF incubating project with excellent Go support,
 ### DD1: Operators over Custom Schedulers
 We use the Kubernetes operator pattern rather than building a custom scheduler. Operators leverage existing K8s scheduling for pod placement while adding domain-specific reconciliation logic. This reduces complexity and benefits from K8s ecosystem tooling (kubectl, Lens, etc.).
 
-### DD2: Sidecar-Based Harness
-The agent harness runs as a sidecar (or init+main container pattern) rather than being baked into the agent image. This keeps agent images clean and allows upgrading the harness independently of the agent.
+### DD2: Adopt Sandbox Agent SDK, Don't Rebuild
+Rather than building our own agent adapter framework in Go, we adopt the [Sandbox Agent SDK](https://sandboxagent.dev/) as the in-sandbox runtime. It already supports 6 agents (Claude Code, Codex, Pi, OpenCode, Amp, Cursor) with a normalized HTTP API. We build a thin Go bridge sidecar that connects it to our K8s control plane (NATS, CRDs, credential proxy). This saves months of adapter development and gives us desktop runtime support (for GUI agents like Cursor) that we'd otherwise punt on.
 
 ### DD3: CRDs as the Source of Truth
 All system state is represented as Kubernetes Custom Resources. This provides:
