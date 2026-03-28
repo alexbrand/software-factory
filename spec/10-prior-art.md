@@ -130,6 +130,99 @@ Pi's RPC mode makes it an excellent first-class citizen in our system. The Sandb
 
 ---
 
+## ToolHive (Stacklok)
+
+**Source**: [github.com/stacklok/toolhive](https://github.com/stacklok/toolhive) / [stacklok.com](https://stacklok.com/)
+
+### What It Does
+
+ToolHive is an enterprise-grade platform for managing MCP (Model Context Protocol) servers — the tool layer that gives AI agents access to external systems. Built in Go by Stacklok (founded by Kubernetes co-creator Craig McLuckie), it runs each MCP server in an isolated container and provides a Kubernetes operator for fleet-scale management. Apache 2.0 licensed, ~1.7k stars, 97 contributors.
+
+### Architecture
+
+| Component | Role |
+|-----------|------|
+| **Runtime** | Runs MCP servers in isolated containers. Fine-grained permissions, network controls, secret management. |
+| **Registry Server** | Curated catalog of trusted MCP servers. Implements the official MCP Registry API. Provenance verification. |
+| **Gateway (vMCP)** | Virtual MCP Server — aggregates multiple MCP servers behind a single endpoint. Tool routing, conflict resolution, token optimization, security policies. |
+| **Portal** | Desktop app + web UI for discovering and installing MCP servers. |
+
+### Kubernetes Operator and CRDs
+
+ToolHive provides three CRDs:
+
+**MCPServer** — declares a single MCP server:
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github
+spec:
+  image: ghcr.io/github/github-mcp-server
+  transport: streamable-http    # stdio | streamable-http | http
+  proxyPort: 8080
+  secrets:
+    - name: github-token
+      key: token
+      targetEnvName: GITHUB_PERSONAL_ACCESS_TOKEN
+```
+
+**MCPGroup** — logically groups servers (e.g., "platform-tools").
+
+**VirtualMCPServer (vMCP)** — aggregates a group into a single endpoint with tool-level policies:
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: team-alpha-tools
+spec:
+  config:
+    groupRef: platform-tools
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+  embeddingServerRef:
+    name: optimizer-embedding   # Enables token optimization
+```
+
+### Key Capabilities
+
+- **Container isolation**: Each MCP server runs in its own container with minimal permissions
+- **Secret injection**: Encrypted secrets injected as env vars, never plaintext
+- **Tool-level RBAC**: vMCP exposes only specific tools per team/role
+- **Token optimization**: Embedded in vMCP, uses semantic + keyword search to surface only relevant tools (60-85% token reduction)
+- **Dynamic backend discovery**: Auto-detects servers added/removed from an MCPGroup
+- **Tool conflict resolution**: Auto-prefixes duplicate tool names across servers (e.g., `github_create_issue` vs `jira_create_issue`)
+- **OIDC/OAuth SSO**: Built-in authorization server, integrates with Okta, Entra ID, Google
+- **GitOps-friendly**: All CRDs deployable via CI/CD pipelines
+
+### Decision: Adopt for MCP Tool Provisioning
+
+ToolHive fills a gap in our architecture: **how do agents get access to MCP tools inside sandboxes?** Our spec's UC2 (Custom Tool-Using Agents) describes agents using MCP tools for databases, APIs, and dashboards, but we never specified how those MCP servers are deployed, managed, or secured.
+
+**Integration model:**
+
+```
+Sandbox Pod                              ToolHive (in-cluster)
+├── Sandbox Agent SDK
+├── Bridge Sidecar ──────────────────►  vMCP Service
+│   (configures MCP via SDK              ├── MCPServer: github
+│    /v1/config/mcp endpoint)            ├── MCPServer: jira
+└── Agent Process                        ├── MCPServer: postgres
+    (uses MCP tools)                     └── MCPServer: custom-api
+```
+
+The bridge sidecar configures the agent's MCP client to point at a vMCP endpoint (a Kubernetes Service). ToolHive handles server lifecycle, secret injection, tool curation, and token optimization. Each tenant namespace gets its own MCPGroup + VirtualMCPServer.
+
+**Why adopt:**
+- Go + Kubernetes-native — same tech stack, operator pattern, CRDs
+- Founded by Kubernetes co-creator — deep alignment with cloud-native patterns
+- Complements, doesn't overlap — ToolHive manages MCP servers; we manage agent sandboxes and workflows
+- Solves non-trivial problems we'd otherwise build: tool aggregation, conflict resolution, token optimization, MCP-specific RBAC
+
+---
+
 ## CNCF Projects Under Consideration
 
 ### Already Adopted
@@ -140,6 +233,7 @@ Pi's RPC mode makes it an excellent first-class citizen in our system. The Sandb
 | **containerd** | Graduated | Container runtime |
 | **OpenTelemetry** | Incubating | Metrics, logs, traces |
 | **NATS** | Incubating | Event bus (JetStream for persistence) |
+| **ToolHive** | — (Apache 2.0 OSS) | MCP server management, tool provisioning for agents |
 
 ### Under Evaluation
 
@@ -177,15 +271,17 @@ The Workflow Controller is the most complex operator in our system. Argo Workflo
 
 ## Summary Matrix
 
-| Feature | Sandbox Agent SDK | Dynamic Workers | Pi | Our System |
-|---------|-------------------|-----------------|-----|------------|
-| Multi-agent orchestration | No | No | No | Yes |
-| Universal agent interface | Yes (6 agents) | No (JS only) | No (single agent) | Yes (via SDK) |
-| Stateful sandboxes | No | No | No | Yes |
-| Kubernetes-native | No | No | No | Yes |
-| Credential isolation | Partial | Yes (globalOutbound) | No | Yes |
-| Event normalization | Yes | No | Partial (RPC events) | Yes (via SDK + bridge) |
-| Workflow DAGs | No | No | No | Yes |
-| Pool autoscaling | No | Yes (Cloudflare-managed) | No | Yes |
+| Feature | Sandbox Agent SDK | Dynamic Workers | Pi | ToolHive | Our System |
+|---------|-------------------|-----------------|-----|----------|------------|
+| Multi-agent orchestration | No | No | No | No | Yes |
+| Universal agent interface | Yes (6 agents) | No (JS only) | No (single agent) | No | Yes (via SDK) |
+| Stateful sandboxes | No | No | No | No | Yes |
+| Kubernetes-native | No | No | No | Yes | Yes |
+| Credential isolation | Partial | Yes (globalOutbound) | No | Yes | Yes |
+| Event normalization | Yes | No | Partial (RPC events) | No | Yes (via SDK + bridge) |
+| Workflow DAGs | No | No | No | No | Yes |
+| Pool autoscaling | No | Yes (Cloudflare-managed) | No | No | Yes |
+| MCP tool management | No | No | No | Yes | Yes (via ToolHive) |
+| Tool-level RBAC | No | No | No | Yes | Yes (via ToolHive) |
 
-Our system fills the gap: **Kubernetes-native multi-agent orchestration with stateful sandboxes.** We adopt the Sandbox Agent SDK for the agent interface layer rather than rebuilding it, and focus our engineering effort on what no existing project provides: the K8s control plane, stateful sandbox lifecycle, DAG orchestration, and observability pipeline.
+Our system fills the gap: **Kubernetes-native multi-agent orchestration with stateful sandboxes.** We adopt the Sandbox Agent SDK for the agent adapter layer, ToolHive for MCP tool provisioning, and focus our engineering effort on what no existing project provides: the K8s control plane, stateful sandbox lifecycle, DAG orchestration, and observability pipeline.

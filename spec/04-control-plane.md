@@ -57,6 +57,12 @@ spec:
           branch: main
           path: /workspace/monorepo
 
+    # MCP tool access (optional, via ToolHive)
+    mcpTools:
+      vmcpRef:
+        name: team-alpha-tools          # VirtualMCPServer in same namespace
+      # Bridge sidecar configures agent's MCP client to point at this endpoint
+
     # Network policy
     networkPolicy:
       egressRules:

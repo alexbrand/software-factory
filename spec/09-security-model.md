@@ -28,6 +28,7 @@ The system runs untrusted AI-generated code inside sandboxes. The security model
 | Resource exhaustion (DoS) | Medium | Resource quotas, LimitRanges, task timeouts |
 | Prompt injection via artifacts | Medium | Artifact validation, content scanning |
 | Supply chain (dependency) | Medium | Image scanning, signed images, read-only base layers |
+| MCP tool abuse | Medium | Tool-level RBAC via ToolHive vMCP, per-tenant tool curation |
 
 ## Isolation Layers
 
@@ -149,6 +150,15 @@ Agent → HTTP request to api.anthropic.com → Credential Proxy → Injects Aut
 4. The agent environment contains no API keys — only the proxy URL.
 
 This is inspired by Cloudflare Dynamic Workers' `globalOutbound` pattern.
+
+### Layer 5: MCP Tool-Level Access Control
+
+When agents use MCP tools (databases, APIs, external services), access is controlled through [ToolHive](https://github.com/stacklok/toolhive) VirtualMCPServer (vMCP) instances:
+
+1. **Per-tenant tool curation**: Each tenant namespace gets its own `MCPGroup` + `VirtualMCPServer`. The vMCP exposes only the specific tools that tenant is authorized to use — not the full surface area of every connected MCP server.
+2. **Secret isolation for MCP servers**: MCP server credentials (database passwords, API tokens) are managed by ToolHive and injected into MCP server containers — never exposed to the agent or its sandbox.
+3. **Audit logging**: ToolHive logs all tool invocations through vMCP, providing an audit trail of which agents called which tools with what parameters.
+4. **Token optimization**: vMCP's embedded optimizer surfaces only relevant tools per request, reducing the attack surface from prompt injection by limiting which tools appear in the agent's context.
 
 ## RBAC
 

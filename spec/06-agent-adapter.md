@@ -276,7 +276,7 @@ Before starting a session, the bridge uses the SDK's filesystem API to prepare t
 
 1. **Write context files**: Task specs, `CLAUDE.md`/`AGENTS.md`, configuration.
 2. **Stage input artifacts**: Download from object storage, write via `/v1/fs/file`.
-3. **Configure MCP servers**: Set up via `/v1/config/mcp` if the task requires specific tools.
+3. **Configure MCP tools**: If the Pool references a ToolHive `VirtualMCPServer`, the bridge configures the agent's MCP client via the SDK's `/v1/config/mcp` endpoint to connect to the vMCP Service endpoint. This gives the agent access to all tools curated for its team/tenant.
 
 After a session completes:
 
