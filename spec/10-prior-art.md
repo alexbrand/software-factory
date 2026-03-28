@@ -14,28 +14,50 @@ This document analyzes existing projects that solve related problems. Each is ev
 
 A Rust-based universal control layer for coding agents. It wraps six agents (Claude Code, Codex, OpenCode, Cursor, Amp, Pi) behind a single HTTP/SSE API with a normalized event schema. Runs inside sandbox environments from various providers (E2B, Daytona, Modal, Docker, etc.).
 
-### What We Should Adopt
+### Decision: Adopt as In-Sandbox Runtime
 
-| Concept | How It Applies |
-|---------|---------------|
-| **Universal session schema** | Our normalized event schema (spec 06) follows the same principle. Sandbox Agent SDK proves that normalizing across diverse agents is viable. |
-| **Agent-swappable architecture** | The "write once, swap agents" model validates our Harness interface design. |
-| **Credential extraction** | Their `credentials extract-env` approach — pulling API keys from local agent configs — is useful for development/testing workflows. |
-| **Inspector UI** | A built-in debug UI for session inspection is valuable. We should consider this for a future iteration. |
+After deeper analysis of the SDK's OpenAPI spec, we decided to **adopt the Sandbox Agent SDK as the in-sandbox agent runtime** rather than building our own adapter layer. See [spec 06](06-agent-harness-interface.md) for the full rationale and integration design.
 
-### Where We Diverge
+### API Surface (from OpenAPI spec)
 
-| Aspect | Sandbox Agent SDK | Our System |
-|--------|-------------------|------------|
-| **Orchestration** | None — single-agent sessions only | Multi-agent DAG workflows |
-| **Scheduling** | Relies on external sandbox providers | Kubernetes-native scheduling and pool management |
-| **Statefulness** | Ephemeral sessions; persistence is external | Stateful sandboxes with PV-backed workspaces |
-| **Language** | Rust | Go (Kubernetes ecosystem alignment) |
-| **Scope** | Agent adapter library | Full orchestration platform |
+The SDK provides a comprehensive HTTP API on port 2468:
 
-### Potential Integration
+| Endpoint Group | Capabilities |
+|---------------|-------------|
+| `/v1/agents` | List, get, install agents |
+| `/v1/acp` | Agent Control Protocol — JSON-RPC + SSE streaming for session control |
+| `/v1/processes` | Full process lifecycle, stdin/PTY, logs, WebSocket terminal |
+| `/v1/desktop/*` | Xvfb/openbox stack: screenshots, keyboard/mouse, video recording, WebRTC |
+| `/v1/fs` | Read, write, stat, mkdir, move, delete, batch upload |
+| `/v1/config` | MCP servers, skills configuration |
+| `/v1/health` | Health check |
 
-The Sandbox Agent SDK could serve as a **reference implementation** for our harness adapters. If we find that maintaining agent-specific adapters in Go is too burdensome, we could run the Sandbox Agent SDK binary inside our harness container and bridge to it via its HTTP API. This would give us instant support for all six agents at the cost of an additional process per sandbox.
+This is far more capable than what we'd build ourselves. Key features we get for free:
+- **6 agent adapters** with normalized session control
+- **Desktop runtime** for GUI agents (Cursor) — we'd otherwise punt on this entirely
+- **Process management** with PTY and WebSocket terminal access
+- **Filesystem API** for workspace preparation and artifact extraction
+- **OpenAPI spec** enabling type-safe Go client generation
+
+### What the SDK Does NOT Provide (and We Build)
+
+| Concern | Our Responsibility |
+|---------|-------------------|
+| Multi-agent orchestration | Workflow/Task controllers, DAG engine |
+| Stateful sandbox lifecycle | PVs, snapshots, warmup, pool autoscaling |
+| Event pipeline | Bridge sidecar: SDK SSE → NATS JetStream |
+| Credential isolation | Bridge sidecar: HTTP proxy with secret injection |
+| Kubernetes integration | CRDs, operators, RBAC, network policies |
+| Observability | OpenTelemetry, metrics, tracing, alerting |
+
+### Risks and Mitigations
+
+| Risk | Mitigation |
+|------|-----------|
+| SDK development stalls | Apache 2.0 license — we can fork. Self-contained Rust binary. |
+| API breaking changes | Pin version per HarnessConfig CR. Generated Go client catches breaks at build time. |
+| Missing agent support | Contribute upstream, or use `/v1/processes` as a fallback for raw process management. |
+| Rust binary is opaque | We only consume its HTTP API — no need to modify internals. |
 
 ---
 
@@ -158,12 +180,12 @@ The Workflow Controller is the most complex operator in our system. Argo Workflo
 | Feature | Sandbox Agent SDK | Dynamic Workers | Pi | Our System |
 |---------|-------------------|-----------------|-----|------------|
 | Multi-agent orchestration | No | No | No | Yes |
-| Universal agent interface | Yes (6 agents) | No (JS only) | No (single agent) | Yes |
+| Universal agent interface | Yes (6 agents) | No (JS only) | No (single agent) | Yes (via SDK) |
 | Stateful sandboxes | No | No | No | Yes |
 | Kubernetes-native | No | No | No | Yes |
 | Credential isolation | Partial | Yes (globalOutbound) | No | Yes |
-| Event normalization | Yes | No | Partial (RPC events) | Yes |
+| Event normalization | Yes | No | Partial (RPC events) | Yes (via SDK + bridge) |
 | Workflow DAGs | No | No | No | Yes |
 | Pool autoscaling | No | Yes (Cloudflare-managed) | No | Yes |
 
-Our system fills the gap: **Kubernetes-native multi-agent orchestration with stateful sandboxes and a universal harness interface.** No existing project provides this combination.
+Our system fills the gap: **Kubernetes-native multi-agent orchestration with stateful sandboxes.** We adopt the Sandbox Agent SDK for the agent interface layer rather than rebuilding it, and focus our engineering effort on what no existing project provides: the K8s control plane, stateful sandbox lifecycle, DAG orchestration, and observability pipeline.

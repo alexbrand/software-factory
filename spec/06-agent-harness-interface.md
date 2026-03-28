@@ -4,111 +4,174 @@
 
 ## Overview
 
-The harness is the universal adapter layer between the orchestration system and individual agent runtimes. It solves the fundamental problem that every coding agent has a different CLI, event format, and session model.
+The harness layer provides the interface between the orchestration control plane and the agent running inside a sandbox. Rather than building our own agent adapter framework, we adopt the [Sandbox Agent SDK](https://sandboxagent.dev/) as the in-sandbox runtime and build a thin Go bridge that connects it to our Kubernetes control plane.
 
-This design is heavily inspired by the [Sandbox Agent SDK](https://sandboxagent.dev/), which demonstrates the viability of a universal agent adapter. Our harness builds on similar principles but is designed for Kubernetes-native deployment rather than generic sandbox providers.
+### Why Sandbox Agent SDK
 
-## Design Goals
+The Sandbox Agent SDK already solves the hardest part of this problem: normalizing across diverse coding agents. Building our own would mean:
 
-1. **Agent-agnostic**: Adding support for a new agent should require implementing a single Go interface, not modifying the control plane.
-2. **Streaming-first**: All session interactions produce a real-time event stream.
-3. **Normalized events**: Regardless of the underlying agent, the event stream follows a common schema.
-4. **Lifecycle control**: The harness manages agent process startup, health, and graceful shutdown.
-5. **Credential isolation**: The harness handles credential injection; the agent never sees raw API keys in its prompt context.
+- Writing and maintaining individual adapters for Claude Code, Codex, Pi, OpenCode, Amp, Cursor (and future agents)
+- Designing a session protocol, event schema, and process management layer
+- Building desktop runtime support for GUI-based agents like Cursor
 
-## Harness Architecture
+The SDK provides all of this as a single Rust binary with an OpenAPI-defined HTTP API. It is Apache 2.0 licensed, actively maintained (~1.2k stars, 18 contributors, frequent releases), and purpose-built for exactly this use case.
+
+**What we build:** A Go bridge sidecar that connects the Sandbox Agent SDK's HTTP API to our Kubernetes control plane (NATS event bus, CRD status updates, credential injection).
+
+**What we adopt:** The Sandbox Agent SDK binary running inside each sandbox pod, managing the actual agent process.
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Sandbox Pod                                     │
-│                                                  │
-│  ┌──────────────────────────────────────────┐   │
-│  │  Harness Process                          │   │
-│  │                                           │   │
-│  │  ┌─────────────┐    ┌──────────────────┐ │   │
-│  │  │  HTTP/gRPC   │    │  Agent Adapter   │ │   │
-│  │  │  Server      │◄──►│  (per-agent      │ │   │
-│  │  │              │    │   implementation) │ │   │
-│  │  └──────┬───────┘    └────────┬─────────┘ │   │
-│  │         │                     │            │   │
-│  │         │              ┌──────▼─────────┐  │   │
-│  │         │              │  Agent Process  │  │   │
-│  │         │              │  (claude, codex │  │   │
-│  │         │              │   pi, etc.)     │  │   │
-│  │         │              └────────────────┘  │   │
-│  │  ┌──────▼───────────────────────────────┐  │   │
-│  │  │  Event Normalizer                     │  │   │
-│  │  │  (agent-specific → common schema)     │  │   │
-│  │  └──────────────────────────────────────┘  │   │
-│  └──────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Sandbox Pod                                                     │
+│                                                                  │
+│  ┌──────────────────────────────┐  ┌──────────────────────────┐ │
+│  │  Sandbox Agent SDK (Rust)     │  │  Bridge Sidecar (Go)     │ │
+│  │                               │  │                          │ │
+│  │  ┌─────────┐ ┌─────────────┐ │  │  ┌────────────────────┐ │ │
+│  │  │ Agent   │ │ Process     │ │  │  │ SSE Consumer       │ │ │
+│  │  │ Control │ │ Management  │ │  │  │ (SDK events →      │ │ │
+│  │  │ (ACP)   │ │             │ │  │  │  NATS JetStream)   │ │ │
+│  │  ├─────────┤ ├─────────────┤ │  │  ├────────────────────┤ │ │
+│  │  │ Desktop │ │ Filesystem  │ │  │  │ Session Manager    │ │ │
+│  │  │ Runtime │ │ Operations  │ │  │  │ (K8s CR ↔ SDK API) │ │ │
+│  │  ├─────────┤ ├─────────────┤ │  │  ├────────────────────┤ │ │
+│  │  │ Config  │ │ Health      │ │  │  │ Credential Proxy   │ │ │
+│  │  │ (MCP,   │ │ (/v1/health)│ │  │  │ (injects secrets   │ │ │
+│  │  │ Skills) │ │             │ │  │  │  into outbound)    │ │ │
+│  │  └─────────┘ └─────────────┘ │  │  └────────────────────┘ │ │
+│  │                               │  │                          │ │
+│  │  HTTP API on :2468            │  │  gRPC on :8080           │ │
+│  └──────────────────────────────┘  └──────────────────────────┘ │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────────┐│
+│  │  Agent Process (managed by SDK)                               ││
+│  │  claude / codex / pi / opencode / amp / cursor               ││
+│  └──────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## Harness Interface (Go)
+## Sandbox Agent SDK API Surface
+
+The SDK exposes a comprehensive HTTP API on port 2468. Key endpoint groups:
+
+### Agent Management (`/v1/agents`)
+- `GET /v1/agents` — List available agents with config details
+- `GET /v1/agents/{agent}` — Get specific agent info
+- `POST /v1/agents/{agent}/install` — Install or configure an agent
+
+### Agent Control Protocol (`/v1/acp`)
+- `GET /v1/acp` — List active ACP server instances
+- `GET /v1/acp/{server_id}` — SSE stream of ACP envelopes (JSON-RPC)
+- `POST /v1/acp/{server_id}` — Send JSON-RPC requests/notifications to agent
+- `DELETE /v1/acp/{server_id}` — Close ACP server connection
+
+### Process Management (`/v1/processes`)
+- `POST /v1/processes` — Create a managed process
+- `POST /v1/processes/{id}/input` — Write to stdin/PTY
+- `POST /v1/processes/{id}/stop` — SIGTERM
+- `POST /v1/processes/{id}/kill` — SIGKILL
+- `GET /v1/processes/{id}/logs` — Fetch logs (supports SSE follow)
+- `GET /v1/processes/{id}/terminal/ws` — WebSocket PTY session
+- `POST /v1/processes/run` — One-shot command execution
+
+### Desktop Runtime (`/v1/desktop/*`)
+Full Xvfb/openbox stack for GUI agents:
+- Display management, screenshots, window control
+- Keyboard/mouse input
+- Video recording and WebRTC streaming
+
+### Filesystem (`/v1/fs`)
+- Read, write, stat, mkdir, move, delete files
+- Batch upload via tar archive
+
+### Health
+- `GET /v1/health` — Service health check
+
+Full OpenAPI spec available from the SDK repository.
+
+## Bridge Sidecar (Go)
+
+The bridge sidecar is the component we build. It is a Go binary that runs alongside the Sandbox Agent SDK in each sandbox pod.
+
+### Responsibilities
+
+1. **Session lifecycle management**: Translates Session CR spec into SDK API calls (create session via ACP, send messages, cancel).
+2. **Event forwarding**: Consumes SSE streams from the SDK and publishes normalized events to NATS JetStream.
+3. **Credential injection**: Intercepts outbound HTTPS from the agent via HTTP proxy, injecting API keys from Kubernetes secrets.
+4. **Status reporting**: Updates Session and Sandbox CR status based on SDK health and session state.
+5. **Workspace preparation**: Uses the SDK's filesystem API to stage context files, write `CLAUDE.md`/`AGENTS.md`, and extract task artifacts.
+
+### Bridge Interface (Go)
 
 ```go
-// Harness is the interface every agent adapter must implement.
-type Harness interface {
-    // Info returns metadata about this agent type.
-    Info() AgentInfo
-
-    // StartSession begins a new agent session with the given configuration.
-    // It returns a Session handle for interaction.
-    StartSession(ctx context.Context, cfg SessionConfig) (Session, error)
-
-    // Healthy returns true if the agent process is running and responsive.
-    Healthy(ctx context.Context) (bool, error)
-
-    // Shutdown gracefully stops the agent process.
-    Shutdown(ctx context.Context) error
+// Bridge connects the Sandbox Agent SDK to the Kubernetes control plane.
+type Bridge struct {
+    sdkClient   *sandboxagent.Client  // Generated from OpenAPI spec
+    natsConn    *nats.Conn
+    k8sClient   client.Client
+    credProxy   *CredentialProxy
+    sandboxName string
 }
 
-// Session represents an active agent interaction.
-type Session interface {
-    // ID returns the unique session identifier.
-    ID() string
+// StartSession creates a new agent session via the SDK.
+func (b *Bridge) StartSession(ctx context.Context, cfg SessionConfig) (string, error) {
+    // 1. Write context files to sandbox filesystem via SDK
+    for _, f := range cfg.ContextFiles {
+        b.sdkClient.WriteFile(ctx, f.Path, f.Content)
+    }
 
-    // SendMessage sends a prompt or follow-up message to the agent.
-    SendMessage(ctx context.Context, msg Message) error
+    // 2. Start agent session via ACP
+    sessionID, err := b.sdkClient.CreateACPSession(ctx, sandboxagent.ACPConfig{
+        Agent:   cfg.AgentType,
+        WorkDir: cfg.WorkDir,
+    })
 
-    // Events returns a channel of normalized events from the agent.
-    Events() <-chan Event
+    // 3. Send the task prompt
+    b.sdkClient.SendACPMessage(ctx, sessionID, cfg.Prompt)
 
-    // Steer sends a steering message that is delivered after the current
-    // tool execution completes (inspired by Pi's steering messages).
-    Steer(ctx context.Context, msg Message) error
+    // 4. Start event forwarding in background
+    go b.forwardEvents(ctx, sessionID)
 
-    // Cancel requests graceful cancellation of the current session.
-    Cancel(ctx context.Context) error
-
-    // Result blocks until the session completes and returns the outcome.
-    Result(ctx context.Context) (*SessionResult, error)
+    return sessionID, err
 }
 
-type AgentInfo struct {
-    Type        string   // e.g., "claude-code", "codex", "pi"
-    Version     string   // Agent version
-    Protocols   []string // Supported communication protocols
+// forwardEvents consumes SSE from the SDK and publishes to NATS.
+func (b *Bridge) forwardEvents(ctx context.Context, sessionID string) {
+    stream := b.sdkClient.StreamACPEvents(ctx, sessionID)
+    for event := range stream {
+        normalized := b.normalizeEvent(sessionID, event)
+        subject := fmt.Sprintf("events.%s.sessions.%s", b.namespace, sessionID)
+        b.natsConn.Publish(subject, normalized)
+    }
 }
 
-type SessionConfig struct {
-    Prompt       string            // The task instruction
-    Context      []ContextFile     // Files to make available
-    Environment  map[string]string // Environment variables
-    WorkDir      string            // Working directory
-    Timeout      time.Duration     // Session timeout
-    SystemPrompt string            // Optional system prompt override
+// SendMessage sends a follow-up message to an active session.
+func (b *Bridge) SendMessage(ctx context.Context, sessionID string, msg string) error {
+    return b.sdkClient.SendACPMessage(ctx, sessionID, msg)
 }
 
-type Message struct {
-    Role    string // "user", "system", "steering"
-    Content string
+// CancelSession gracefully stops an active session.
+func (b *Bridge) CancelSession(ctx context.Context, sessionID string) error {
+    return b.sdkClient.CloseACPSession(ctx, sessionID)
 }
 ```
 
-## Normalized Event Schema
+### SDK Client Generation
 
-All agent events are normalized to a common schema before being published. This enables agent-agnostic tooling for monitoring, replay, and analysis.
+We generate a Go client from the Sandbox Agent SDK's OpenAPI spec:
+
+```bash
+# Generate Go client from OpenAPI spec
+oapi-codegen -package sandboxagent -generate types,client openapi.yaml > pkg/sandboxagent/client.go
+```
+
+This gives us type-safe access to all SDK endpoints without maintaining manual HTTP code.
+
+## Event Normalization
+
+The bridge translates SDK ACP events into our normalized event schema before publishing to NATS. The SDK's events arrive as JSON-RPC envelopes over SSE; we map them to our common schema:
 
 ```go
 type Event struct {
@@ -117,6 +180,8 @@ type Event struct {
     Timestamp time.Time       `json:"timestamp"`
     Type      EventType       `json:"type"`
     Data      json.RawMessage `json:"data"`
+    // Preserve the original SDK event for debugging/replay
+    Raw       json.RawMessage `json:"raw,omitempty"`
 }
 
 type EventType string
@@ -152,156 +217,144 @@ const (
 )
 ```
 
-### Event Data Examples
+We retain the `Raw` field so we can always fall back to the SDK's native event format for debugging or agent-specific analysis.
 
-```json
-{
-  "id": "evt-001",
-  "sessionId": "sess-abc123",
-  "timestamp": "2026-03-27T10:30:15Z",
-  "type": "tool.call",
-  "data": {
-    "tool": "bash",
-    "input": {"command": "go test ./..."},
-    "agentNativeTool": "Bash"
-  }
-}
+## Session Lifecycle
+
+```
+Session Controller                Bridge Sidecar              Sandbox Agent SDK
+      │                                │                              │
+      │  Create Session CR             │                              │
+      ├───────────────────────────────►│                              │
+      │                                │  Write context files         │
+      │                                ├─────────────────────────────►│
+      │                                │  POST /v1/acp (create)       │
+      │                                ├─────────────────────────────►│
+      │                                │  POST /v1/acp/{id} (prompt)  │
+      │                                ├─────────────────────────────►│
+      │                                │                              │
+      │                                │  GET /v1/acp/{id} (SSE)     │
+      │                                │◄─────────────────────────────┤
+      │  Events via NATS               │                              │
+      │◄───────────────────────────────┤  (normalized + forwarded)    │
+      │                                │                              │
+      │  Send follow-up message        │                              │
+      ├───────────────────────────────►│  POST /v1/acp/{id}          │
+      │                                ├─────────────────────────────►│
+      │                                │                              │
+      │  Cancel session                │                              │
+      ├───────────────────────────────►│  DELETE /v1/acp/{id}        │
+      │                                ├─────────────────────────────►│
+      │                                │                              │
+      │  Session complete event        │                              │
+      │◄───────────────────────────────┤                              │
+      │  Update Session CR status      │                              │
 ```
 
-```json
-{
-  "id": "evt-002",
-  "sessionId": "sess-abc123",
-  "timestamp": "2026-03-27T10:30:20Z",
-  "type": "token.usage",
-  "data": {
-    "inputTokens": 1500,
-    "outputTokens": 300,
-    "cacheReadTokens": 500,
-    "model": "claude-opus-4-6",
-    "estimatedCost": 0.045
-  }
-}
-```
+## Credential Injection
 
-## Agent Adapter Implementations
+The bridge sidecar runs an HTTP/HTTPS proxy that intercepts outbound requests from the agent process:
 
-### Claude Code Adapter
-
-Communication: stdin/stdout (JSONL) or HTTP via `--server` mode.
+1. The sandbox environment is configured with `HTTP_PROXY`/`HTTPS_PROXY` pointing to the bridge sidecar.
+2. The bridge matches outbound requests against credential mappings loaded from Kubernetes secrets.
+3. API keys are injected into request headers at the proxy layer.
+4. The agent never sees raw credentials.
 
 ```go
-type ClaudeCodeAdapter struct {
-    binaryPath string
-    process    *os.Process
-}
-
-// StartSession launches claude with --print --output-format=json
-// and streams structured output from stdout.
-```
-
-Key considerations:
-- Claude Code supports `CLAUDE.md` context files — the harness writes task context to this file before starting a session.
-- Uses `--allowedTools` to restrict tool access per task configuration.
-- Token usage extracted from the JSON output stream.
-
-### Codex Adapter
-
-Communication: CLI with structured output.
-
-```go
-type CodexAdapter struct {
-    binaryPath string
-    process    *os.Process
+type CredentialMapping struct {
+    Host      string // e.g., "api.anthropic.com"
+    Header    string // e.g., "x-api-key"
+    SecretRef SecretKeyRef
 }
 ```
 
-Key considerations:
-- Codex uses a sandbox-within-sandbox model — our outer sandbox provides the persistent state, Codex's inner sandbox can be disabled or configured to use the outer filesystem directly.
-- Event normalization maps Codex's tool calls to the common schema.
+This is the same pattern as Cloudflare Dynamic Workers' `globalOutbound` — proven at scale.
 
-### Pi Adapter
+## Workspace Preparation
 
-Communication: stdin/stdout RPC (JSONL framing) or SDK embedding.
+Before starting a session, the bridge uses the SDK's filesystem API to prepare the workspace:
 
-```go
-type PiAdapter struct {
-    binaryPath string
-    rpcConn    *jsonrpc.Conn
-}
+1. **Write context files**: Task specs, `CLAUDE.md`/`AGENTS.md`, configuration.
+2. **Stage input artifacts**: Download from object storage, write via `/v1/fs/file`.
+3. **Configure MCP servers**: Set up via `/v1/config/mcp` if the task requires specific tools.
+
+After a session completes:
+
+1. **Extract output artifacts**: Read specified paths via `/v1/fs/file`, upload to object storage.
+2. **Collect metadata**: Token usage, duration, tool call counts from the event stream.
+
+## HarnessConfig CR
+
+The `HarnessConfig` CR is simplified — it no longer defines how to build an adapter, just how to configure the SDK for a specific agent:
+
+```yaml
+apiVersion: factory.example.com/v1alpha1
+kind: HarnessConfig
+metadata:
+  name: claude-code
+  namespace: team-alpha
+spec:
+  agentType: claude-code        # Must match SDK's agent identifier
+  displayName: "Claude Code"
+
+  # Sandbox Agent SDK configuration
+  sdk:
+    image: ghcr.io/rivet-dev/sandbox-agent:v0.4.2   # SDK binary image
+    port: 2468
+
+  # Bridge sidecar configuration
+  bridge:
+    image: ghcr.io/example/factory-bridge:v0.1.0
+    port: 8080
+
+  # Agent-specific configuration
+  agentConfig:
+    contextFile: CLAUDE.md      # Which context file the agent reads
+    allowedTools:               # Tool restrictions (optional)
+      - bash
+      - read
+      - write
+      - edit
+
+  # Credential requirements
+  credentials:
+    - name: ANTHROPIC_API_KEY
+      secretRef:
+        name: anthropic-credentials
+        key: api-key
+      host: api.anthropic.com        # For credential proxy matching
+      header: x-api-key
 ```
 
-Key considerations:
-- Pi's RPC mode over stdin/stdout is ideal for harness integration.
-- Supports steering messages natively — our `Steer()` method maps directly.
-- Session tree branching could be exposed as an advanced feature.
-- Pi loads `AGENTS.md` or `CLAUDE.md` — the harness writes context to these files.
+## Adding Support for a New Agent
 
-## HTTP API
+Because we use the Sandbox Agent SDK, adding a new agent is straightforward:
 
-The harness exposes an HTTP API within the sandbox pod for the Session Controller to interact with.
+1. **If the SDK already supports the agent** (Claude Code, Codex, Pi, OpenCode, Amp, Cursor): Create a `HarnessConfig` CR with the agent type. No code changes needed.
 
-### Endpoints
+2. **If the SDK doesn't support the agent yet**: Either contribute an adapter upstream to the SDK (Rust), or request it from the SDK maintainers. The SDK's adapter model is designed for this.
 
-```
-POST   /sessions              Create a new session
-GET    /sessions/{id}         Get session status
-POST   /sessions/{id}/messages  Send a message to the session
-GET    /sessions/{id}/events  Stream events (SSE)
-POST   /sessions/{id}/steer   Send a steering message
-DELETE /sessions/{id}         Cancel a session
-GET    /healthz               Health check
-GET    /info                  Agent info
-```
+3. **If we need to support an agent before the SDK does**: Run the agent as a managed process via the SDK's `/v1/processes` API. The bridge can still manage it, but without the normalized ACP event stream — we'd consume raw process logs instead.
 
-### Session Creation
+The control plane never changes — it only talks to the bridge sidecar.
 
-```
-POST /sessions
-Content-Type: application/json
+## Trade-offs and Risks
 
-{
-  "prompt": "Implement the authentication module...",
-  "context": [
-    {"path": "AGENTS.md", "content": "...project context..."},
-    {"path": "api-spec.yaml", "content": "..."}
-  ],
-  "workDir": "/workspace/repo",
-  "timeout": "45m",
-  "environment": {
-    "GITHUB_TOKEN": "***"
-  }
-}
+### Risks of Adopting the SDK
 
-Response:
-{
-  "id": "sess-abc123",
-  "status": "running",
-  "eventStreamUrl": "/sessions/sess-abc123/events"
-}
-```
+| Risk | Mitigation |
+|------|-----------|
+| SDK development stalls | Apache 2.0 — we can fork. Single Rust binary is self-contained. |
+| SDK API changes break us | Pin SDK version per HarnessConfig. Generated Go client catches breaking changes at build time. |
+| Rust binary is opaque | We don't need to modify it — only consume its HTTP API. We can contribute upstream for features we need. |
+| Performance overhead of extra process | Rust binary is ~5MB, starts in <1s, uses minimal memory. Negligible compared to the agent process. |
 
-### Event Streaming
+### What We Gain
 
-```
-GET /sessions/sess-abc123/events
-Accept: text/event-stream
-
-data: {"id":"evt-001","type":"session.started","timestamp":"...","data":{}}
-data: {"id":"evt-002","type":"agent.thinking","timestamp":"...","data":{"content":"Let me analyze..."}}
-data: {"id":"evt-003","type":"tool.call","timestamp":"...","data":{"tool":"bash","input":{"command":"ls"}}}
-data: {"id":"evt-004","type":"tool.result","timestamp":"...","data":{"tool":"bash","output":"..."}}
-...
-data: {"id":"evt-099","type":"session.completed","timestamp":"...","data":{"result":"success"}}
-```
-
-## Adding a New Agent
-
-To add support for a new agent:
-
-1. Implement the `Harness` interface in a new Go package under `pkg/harness/<agent-name>/`.
-2. Implement event normalization mapping the agent's native events to the common `Event` schema.
-3. Create a container image with the harness binary and agent binary.
-4. Register the agent type by creating a `HarnessConfig` CR.
-
-The control plane requires zero changes — it only interacts with the harness HTTP API.
+| Benefit | Impact |
+|---------|--------|
+| 6 agents supported immediately | Months of adapter development saved |
+| Desktop runtime for GUI agents | Cursor support we'd otherwise punt on |
+| Battle-tested agent management | Process supervision, PTY support, log buffering |
+| OpenAPI-defined contract | Type-safe Go client generation, clear API boundary |
+| Active upstream maintenance | Security fixes, new agent support from community |

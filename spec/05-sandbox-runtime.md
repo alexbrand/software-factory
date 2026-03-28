@@ -26,21 +26,24 @@ Pod: sandbox-abc123
 │   ├── Restore dependency caches (from PV or object storage)
 │   └── Apply warmup commands from Pool spec
 │
-├── Container: agent
-│   ├── Runs the harness binary
-│   ├── Harness manages the agent process lifecycle
-│   ├── Exposes HTTP/gRPC for session control
+├── Container: sandbox-agent-sdk (Rust binary)
+│   ├── Runs the Sandbox Agent SDK (https://sandboxagent.dev/)
+│   ├── Manages agent process lifecycle (Claude Code, Codex, Pi, etc.)
+│   ├── Exposes HTTP API on :2468 for session control, filesystem, process mgmt
+│   ├── Provides desktop runtime for GUI agents (Cursor)
 │   └── Mounts workspace PV at /workspace
 │
-├── Container: sidecar (optional)
-│   ├── Credential proxy (intercepts outbound requests, injects auth)
-│   ├── Event forwarder (streams session events to NATS)
+├── Container: bridge (Go binary)
+│   ├── Connects SDK to Kubernetes control plane
+│   ├── Consumes SSE events from SDK → publishes to NATS JetStream
+│   ├── Credential proxy (intercepts outbound HTTPS, injects auth headers)
+│   ├── Updates Session/Sandbox CR status
 │   └── Metrics exporter (Prometheus endpoint)
 │
 └── Volumes:
     ├── workspace-pv: PersistentVolumeClaim (sandbox state)
     ├── cache-pv: PersistentVolumeClaim (shared dependency cache, ReadOnlyMany)
-    └── secrets: Projected volume (API keys, tokens)
+    └── secrets: Projected volume (API keys, tokens — read by bridge only)
 ```
 
 ## Filesystem Strategy
