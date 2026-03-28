@@ -25,7 +25,7 @@ The system follows a layered architecture built on Kubernetes primitives. Each l
 │  └──────┬───────┘ └──────┬───────┘ └──────────┬───────────────┘ │
 │         │                │                     │                 │
 │  ┌──────▼───────┐ ┌──────▼───────┐ ┌──────────▼───────────────┐ │
-│  │  Task        │ │   Session    │ │   Harness                │ │
+│  │  Task        │ │   Session    │ │   Agent                  │ │
 │  │  Controller  │ │  Controller  │ │   Registry               │ │
 │  └──────────────┘ └──────────────┘ └──────────────────────────┘ │
 └──────────────────────────┬──────────────────────────────────────┘
@@ -72,11 +72,11 @@ All operators are written in Go using [controller-runtime](https://github.com/ku
 | **Workflow Controller** | `Workflow` CRs | Decomposes workflows into `Task` CRs, manages DAG execution order |
 | **Task Controller** | `Task` CRs | Claims a sandbox from the pool, creates a `Session` CR |
 | **Sandbox Controller** | `Sandbox` CRs | Manages pod lifecycle, volume provisioning, network policy |
-| **Session Controller** | `Session` CRs | Invokes the harness, streams events, captures results |
+| **Session Controller** | `Session` CRs | Invokes the bridge sidecar, streams events, captures results |
 | **Pool Controller** | `Pool` CRs | Autoscales sandboxes based on demand and pool configuration |
 
-### Harness Registry
-A configuration store (`HarnessConfig` CRs) mapping agent types to their container images and configuration. Each entry specifies the Sandbox Agent SDK version and bridge sidecar image for that agent type. See [spec 06](06-agent-harness-interface.md) for details.
+### Agent Registry
+A configuration store (`AgentConfig` CRs) mapping agent types to their container images and configuration. Each entry specifies the Sandbox Agent SDK version and bridge sidecar image for that agent type. See [spec 06](06-agent-adapter.md) for details.
 
 ### Data Plane
 The data plane consists of sandbox pods running actual agent workloads. Each sandbox pod contains:

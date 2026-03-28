@@ -6,12 +6,12 @@
 
 Build a Kubernetes-native platform that orchestrates fleets of AI agents in stateful, isolated sandboxes. The platform treats agents as a first-class workload type — similar to how Kubernetes treats containers — providing primitives for lifecycle management, scheduling, observability, and coordination.
 
-The system is **agent-agnostic**: it does not embed any specific coding agent. Instead, it provides a universal harness interface that adapts to any agent runtime (Claude Code, Codex, Pi, Aider, etc.), allowing operators to choose — or mix — agents based on the task at hand.
+The system is **agent-agnostic**: it does not embed any specific coding agent. Instead, it provides a universal adapter interface (via the [Sandbox Agent SDK](https://sandboxagent.dev/)) that supports any coding harness (Claude Code, Codex, Pi, Aider, etc.), allowing operators to choose — or mix — agents based on the task at hand.
 
 ## Goals
 
 ### G1: Universal Agent Runtime
-Support multiple coding agent harnesses through a common adapter interface. Operators should be able to swap agents without changing their orchestration logic. Initially target: Claude Code, Codex, and Pi.
+Support multiple coding harnesses through a common adapter interface. Operators should be able to swap agents without changing their orchestration logic. Initially target: Claude Code, Codex, and Pi.
 
 ### G2: Stateful Sandboxes
 Provide persistent, isolated execution environments where agents can work across sessions without re-cloning repositories or reinstalling dependencies. Sandbox state (filesystem, installed packages, running processes) survives agent restarts and can be snapshotted/restored.

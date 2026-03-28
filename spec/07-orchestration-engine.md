@@ -159,7 +159,7 @@ Timeouts apply at two levels:
 - **Task timeout**: Maximum time for a single task (including retries). Default: 1h.
 - **Workflow timeout**: Maximum time for the entire workflow. Default: 24h.
 
-When a timeout fires, the session is cancelled gracefully (the harness sends a cancel signal to the agent), then forcefully killed after a grace period.
+When a timeout fires, the session is cancelled gracefully (the bridge sidecar sends a cancel signal to the agent via the SDK), then forcefully killed after a grace period.
 
 ## Advanced Patterns
 

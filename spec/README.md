@@ -2,7 +2,7 @@
 
 ## Overview
 
-This specification describes an **agent orchestration system built on Kubernetes** that enables running, managing, and coordinating fleets of AI coding agents in stateful sandboxes. The system provides a universal interface across multiple agent harnesses (Claude Code, Codex, Pi, etc.) and supports use cases ranging from fleet-based software development to custom tool-using agents.
+This specification describes an **agent orchestration system built on Kubernetes** that enables running, managing, and coordinating fleets of AI coding agents (harnesses) in stateful sandboxes. The system provides a universal adapter interface across multiple coding harnesses (Claude Code, Codex, Pi, etc.) and supports use cases ranging from fleet-based software development to custom tool-using agents.
 
 ## Reading Guide
 
@@ -27,7 +27,7 @@ The spec is organized for **progressive disclosure**. Start with the vision, the
 |----------|-------------|
 | [04 - Control Plane](04-control-plane.md) | Kubernetes operators, Custom Resource Definitions, and API design |
 | [05 - Sandbox Runtime](05-sandbox-runtime.md) | Sandbox lifecycle, stateful environments, filesystem and dependency caching |
-| [06 - Agent Harness Interface](06-agent-harness-interface.md) | Universal adapter layer for coding agents, session management, event streaming |
+| [06 - Agent Adapter Layer](06-agent-adapter.md) | Sandbox Agent SDK integration, bridge sidecar, session management, event streaming |
 | [07 - Orchestration Engine](07-orchestration-engine.md) | Task decomposition, DAG execution, multi-agent workflows |
 
 ### Layer 4: Cross-Cutting Concerns
@@ -48,7 +48,7 @@ The spec is organized for **progressive disclosure**. Start with the vision, the
 - **Primary language:** Go
 - **Runtime platform:** Kubernetes
 - **CNCF ecosystem:** Leverage existing projects where they fit (detailed in individual specs)
-- **Secondary languages:** Rust or TypeScript where ecosystem demands it (e.g., agent harness adapters)
+- **Secondary languages:** Rust or TypeScript where ecosystem demands it (e.g., the Sandbox Agent SDK is Rust)
 
 ## Status
 

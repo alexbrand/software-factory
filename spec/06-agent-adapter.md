@@ -1,10 +1,10 @@
-# 06 — Agent Harness Interface
+# 06 — Agent Adapter Layer
 
 **Status:** DRAFT
 
 ## Overview
 
-The harness layer provides the interface between the orchestration control plane and the agent running inside a sandbox. Rather than building our own agent adapter framework, we adopt the [Sandbox Agent SDK](https://sandboxagent.dev/) as the in-sandbox runtime and build a thin Go bridge that connects it to our Kubernetes control plane.
+The adapter layer provides the interface between the orchestration control plane and the coding harness (agent) running inside a sandbox. Rather than building our own agent adapter framework, we adopt the [Sandbox Agent SDK](https://sandboxagent.dev/) as the in-sandbox runtime and build a thin Go bridge that connects it to our Kubernetes control plane.
 
 ### Why Sandbox Agent SDK
 
@@ -283,13 +283,13 @@ After a session completes:
 1. **Extract output artifacts**: Read specified paths via `/v1/fs/file`, upload to object storage.
 2. **Collect metadata**: Token usage, duration, tool call counts from the event stream.
 
-## HarnessConfig CR
+## AgentConfig CR
 
-The `HarnessConfig` CR is simplified — it no longer defines how to build an adapter, just how to configure the SDK for a specific agent:
+The `AgentConfig` CR is simplified — it no longer defines how to build an adapter, just how to configure the SDK for a specific agent:
 
 ```yaml
 apiVersion: factory.example.com/v1alpha1
-kind: HarnessConfig
+kind: AgentConfig
 metadata:
   name: claude-code
   namespace: team-alpha
@@ -308,7 +308,7 @@ spec:
     port: 8080
 
   # Agent-specific configuration
-  agentConfig:
+  agentSettings:
     contextFile: CLAUDE.md      # Which context file the agent reads
     allowedTools:               # Tool restrictions (optional)
       - bash
@@ -330,7 +330,7 @@ spec:
 
 Because we use the Sandbox Agent SDK, adding a new agent is straightforward:
 
-1. **If the SDK already supports the agent** (Claude Code, Codex, Pi, OpenCode, Amp, Cursor): Create a `HarnessConfig` CR with the agent type. No code changes needed.
+1. **If the SDK already supports the agent** (Claude Code, Codex, Pi, OpenCode, Amp, Cursor): Create a `AgentConfig` CR with the agent type. No code changes needed.
 
 2. **If the SDK doesn't support the agent yet**: Either contribute an adapter upstream to the SDK (Rust), or request it from the SDK maintainers. The SDK's adapter model is designed for this.
 
@@ -345,7 +345,7 @@ The control plane never changes — it only talks to the bridge sidecar.
 | Risk | Mitigation |
 |------|-----------|
 | SDK development stalls | Apache 2.0 — we can fork. Single Rust binary is self-contained. |
-| SDK API changes break us | Pin SDK version per HarnessConfig. Generated Go client catches breaking changes at build time. |
+| SDK API changes break us | Pin SDK version per `AgentConfig` CR. Generated Go client catches breaking changes at build time. |
 | Rust binary is opaque | We don't need to modify it — only consume its HTTP API. We can contribute upstream for features we need. |
 | Performance overhead of extra process | Rust binary is ~5MB, starts in <1s, uses minimal memory. Negligible compared to the agent process. |
 

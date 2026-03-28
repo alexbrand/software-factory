@@ -95,7 +95,7 @@ Each sandbox gets a NetworkPolicy restricting network access:
 1. **Deny all by default**: No ingress or egress without explicit rules.
 2. **Allow DNS**: Required for name resolution.
 3. **Allow specific egress**: Only allowlisted destinations (LLM APIs, git hosts, package registries).
-4. **Allow control plane ingress**: The harness HTTP port is accessible only from the Session Controller.
+4. **Allow control plane ingress**: The bridge sidecar HTTP port is accessible only from the Session Controller.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -157,7 +157,7 @@ This is inspired by Cloudflare Dynamic Workers' `globalOutbound` pattern.
 | Role | Scope | Permissions |
 |------|-------|-------------|
 | `factory-admin` | Cluster | Full access to all resources |
-| `tenant-admin` | Namespace | Manage pools, harness configs, view all workflows |
+| `tenant-admin` | Namespace | Manage pools, agent configs, view all workflows |
 | `developer` | Namespace | Submit workflows, view own tasks and sessions |
 | `viewer` | Namespace | Read-only access to workflows and sessions |
 
@@ -210,7 +210,7 @@ Task Secrets (injected per-task)
 
 ### Secret Injection Flow
 
-1. `HarnessConfig` declares required credentials.
+1. `AgentConfig` declares required credentials.
 2. `Pool` spec references secrets by `secretRef`.
 3. Sandbox Controller mounts secrets as projected volumes.
 4. Credential proxy reads secrets from the volume.

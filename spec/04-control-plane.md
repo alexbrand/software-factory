@@ -21,8 +21,8 @@ metadata:
   name: claude-code-pool
   namespace: team-alpha
 spec:
-  # Which agent harness to use
-  harnessRef:
+  # Which agent type to use
+  agentConfigRef:
     name: claude-code
 
   # Scaling configuration
@@ -89,7 +89,7 @@ metadata:
 spec:
   poolRef:
     name: claude-code-pool
-  harnessRef:
+  agentConfigRef:
     name: claude-code
 
   # Override pool defaults if needed
@@ -112,31 +112,30 @@ status:
       status: "True"
 ```
 
-### HarnessConfig
+### AgentConfig
 
-Defines how to run a specific agent type.
+Defines how to run a specific agent type. Configures the Sandbox Agent SDK and bridge sidecar for this agent.
 
 ```yaml
 apiVersion: factory.example.com/v1alpha1
-kind: HarnessConfig
+kind: AgentConfig
 metadata:
   name: claude-code
   namespace: team-alpha
 spec:
   # Agent identification
-  agentType: claude-code
+  agentType: claude-code        # Must match SDK's agent identifier
   displayName: "Claude Code"
 
-  # Container configuration
-  container:
-    image: ghcr.io/example/harness-claude-code:v0.1.0
-    command: ["/harness", "serve"]
-    ports:
-      - name: harness
-        containerPort: 8080
-    env:
-      - name: AGENT_BINARY
-        value: "/usr/local/bin/claude"
+  # Sandbox Agent SDK configuration
+  sdk:
+    image: ghcr.io/rivet-dev/sandbox-agent:v0.4.2
+    port: 2468
+
+  # Bridge sidecar configuration
+  bridge:
+    image: ghcr.io/example/factory-bridge:v0.1.0
+    port: 8080
     healthCheck:
       httpGet:
         path: /healthz
@@ -144,12 +143,14 @@ spec:
       initialDelaySeconds: 5
       periodSeconds: 10
 
-  # Session protocol
-  protocol:
-    type: http-sse          # http-sse | grpc-stream | stdio
-    sessionEndpoint: /sessions
-    eventEndpoint: /sessions/{id}/events
-    messageEndpoint: /sessions/{id}/messages
+  # Agent-specific settings
+  agentSettings:
+    contextFile: CLAUDE.md      # Which context file the agent reads
+    allowedTools:               # Tool restrictions (optional)
+      - bash
+      - read
+      - write
+      - edit
 
   # Credential requirements
   credentials:
@@ -157,7 +158,8 @@ spec:
       secretRef:
         name: anthropic-credentials
         key: api-key
-      required: true
+      host: api.anthropic.com
+      header: x-api-key
 ```
 
 ### Workflow
@@ -309,7 +311,7 @@ status:
 
 ### Sandbox Controller
 
-1. **On Sandbox create**: Create a Pod with the harness container, mount the PV, apply network policies, inject credentials from the HarnessConfig.
+1. **On Sandbox create**: Create a Pod with the SDK and bridge containers, mount the PV, apply network policies, inject credentials from the AgentConfig.
 
 2. **On Pod ready**: Set sandbox phase to `Ready`.
 
@@ -327,7 +329,7 @@ status:
 
 ### Session Controller
 
-1. **On Session create**: Connect to the harness HTTP/gRPC endpoint in the sandbox pod. Send the prompt. Begin streaming events to NATS.
+1. **On Session create**: Connect to the bridge sidecar endpoint in the sandbox pod. Send the prompt. Begin streaming events to NATS.
 
 2. **On event received**: Publish to NATS stream `sessions.<session-id>`. Update Session CR status with latest event summary.
 

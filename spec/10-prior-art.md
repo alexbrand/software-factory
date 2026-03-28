@@ -16,7 +16,7 @@ A Rust-based universal control layer for coding agents. It wraps six agents (Cla
 
 ### Decision: Adopt as In-Sandbox Runtime
 
-After deeper analysis of the SDK's OpenAPI spec, we decided to **adopt the Sandbox Agent SDK as the in-sandbox agent runtime** rather than building our own adapter layer. See [spec 06](06-agent-harness-interface.md) for the full rationale and integration design.
+After deeper analysis of the SDK's OpenAPI spec, we decided to **adopt the Sandbox Agent SDK as the in-sandbox agent runtime** rather than building our own adapter layer. See [spec 06](06-agent-adapter.md) for the full rationale and integration design.
 
 ### API Surface (from OpenAPI spec)
 
@@ -55,7 +55,7 @@ This is far more capable than what we'd build ourselves. Key features we get for
 | Risk | Mitigation |
 |------|-----------|
 | SDK development stalls | Apache 2.0 license — we can fork. Self-contained Rust binary. |
-| API breaking changes | Pin version per HarnessConfig CR. Generated Go client catches breaks at build time. |
+| API breaking changes | Pin version per `AgentConfig` CR. Generated Go client catches breaks at build time. |
 | Missing agent support | Contribute upstream, or use `/v1/processes` as a fallback for raw process management. |
 | Rust binary is opaque | We only consume its HTTP API — no need to modify internals. |
 
@@ -76,7 +76,7 @@ A Cloudflare runtime feature that spins up V8 isolates at runtime to execute LLM
 | **Capability-based security via bindings** | Dynamic Workers have zero capabilities by default; the parent explicitly grants access. Our credential proxy and network policies follow the same principle — deny-all default, explicit allowlisting. |
 | **`globalOutbound` for credential safety** | The parent intercepts outbound HTTP requests and injects credentials. This directly inspired our credential proxy sidecar design (spec 09). |
 | **Code Mode** | The idea of having an LLM generate a program rather than making sequential tool calls is powerful. While not directly applicable to our orchestration model, it's relevant for custom tool-using agents (UC2). |
-| **Virtual filesystem** | Their `@cloudflare/shell` package provides a transactional virtual filesystem. Our PV-backed workspace is the Kubernetes equivalent, but we should consider supporting similar file operation APIs in the harness. |
+| **Virtual filesystem** | Their `@cloudflare/shell` package provides a transactional virtual filesystem. Our PV-backed workspace is the Kubernetes equivalent, and the Sandbox Agent SDK provides similar file operation APIs via `/v1/fs`. |
 
 ### Where We Diverge
 
@@ -107,12 +107,12 @@ A TypeScript monorepo providing a minimal coding agent (`pi-coding-agent`), a mu
 
 | Concept | How It Applies |
 |---------|---------------|
-| **RPC over stdin/stdout** | Pi's JSONL-framed RPC mode is ideal for harness integration. This is the cleanest agent control interface we've seen and directly maps to our Harness interface. |
+| **RPC over stdin/stdout** | Pi's JSONL-framed RPC mode is ideal for adapter integration. The Sandbox Agent SDK uses this to communicate with Pi. |
 | **Steering messages** | Messages queued and delivered after tool execution completes. This enables mid-task redirection without interrupting the agent's current operation. We adopted this in our Session interface (spec 06). |
 | **Session tree with branching** | Sessions stored with `id`/`parentId` enabling branching. Useful for exploring alternative approaches to a task. We should consider this for advanced workflow patterns. |
-| **Extension system** | Pi's minimal core + extension model (skills, extensions, themes) demonstrates how to keep the agent harness thin while enabling customization. Our HarnessConfig should support extension loading. |
-| **Context file hierarchy** | `AGENTS.md`/`CLAUDE.md` loaded from home and parent directories. Our harness should write task context to these standard files rather than inventing a new mechanism. |
-| **Automatic compaction** | Proactive context compaction on overflow. Long-running agent sessions in our system will hit context limits — the harness should support compaction strategies. |
+| **Extension system** | Pi's minimal core + extension model (skills, extensions, themes) demonstrates how to keep the coding harness thin while enabling customization. Our `AgentConfig` should support extension loading. |
+| **Context file hierarchy** | `AGENTS.md`/`CLAUDE.md` loaded from home and parent directories. Our bridge sidecar writes task context to these standard files rather than inventing a new mechanism. |
+| **Automatic compaction** | Proactive context compaction on overflow. Long-running agent sessions in our system will hit context limits — the coding harness handles this internally. |
 
 ### Where We Diverge
 
@@ -126,7 +126,7 @@ A TypeScript monorepo providing a minimal coding agent (`pi-coding-agent`), a mu
 
 ### Potential Integration
 
-Pi's RPC mode makes it an excellent first-class citizen in our system. The Pi harness adapter can communicate via stdin/stdout JSONL, getting native steering support and clean event normalization. Pi's `pi-ai` library could also be useful if we ever need to build meta-agents that orchestrate at the LLM level (e.g., task decomposition agents).
+Pi's RPC mode makes it an excellent first-class citizen in our system. The Sandbox Agent SDK communicates with Pi via stdin/stdout JSONL, getting native steering support and clean event normalization. Pi's `pi-ai` library could also be useful if we ever need to build meta-agents that orchestrate at the LLM level (e.g., task decomposition agents).
 
 ---
 
@@ -166,7 +166,7 @@ The Workflow Controller is the most complex operator in our system. Argo Workflo
 - Handles fan-out/fan-in, loops, recursion
 
 **Arguments for building our own:**
-- Argo Workflows is generic — our workflows are agent-specific (sessions, harnesses, pools)
+- Argo Workflows is generic — our workflows are agent-specific (sessions, sandboxes, pools)
 - Argo's step containers are short-lived; our sandboxes are long-lived and reusable
 - Tight integration with sandbox pools and session management is easier in a custom controller
 - Argo introduces significant operational overhead (its own set of CRDs, controllers, database)
