@@ -4,7 +4,7 @@ set -euo pipefail
 ERRORS=()
 
 # --- Go tests (only if Go files exist) ---
-if compgen -G "**/*.go" > /dev/null 2>&1; then
+if find . -name '*.go' -print -quit | grep -q .; then
   if ! go test ./... 2>&1; then
     ERRORS+=("go test failed")
   fi
