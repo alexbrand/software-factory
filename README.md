@@ -4,151 +4,87 @@ Kubernetes-based platform for orchestrating fleets of AI coding agents in statef
 
 See [spec/README.md](spec/README.md) for the full system specification.
 
-## Directory Structure
+## Project Layout
 
 ```
-software-factory/
-├── api/                            # CRD type definitions
-│   └── v1alpha1/                   # factory.example.com/v1alpha1
-│       ├── pool_types.go
-│       ├── sandbox_types.go
-│       ├── agentconfig_types.go
-│       ├── workflow_types.go
-│       ├── task_types.go
-│       ├── session_types.go
-│       ├── workflowtemplate_types.go
-│       ├── webhooksubscription_types.go
-│       ├── groupversion_info.go
-│       └── zz_generated.deepcopy.go
-│
-├── cmd/                            # Binary entry points
-│   ├── controller-manager/         # All control plane controllers in one binary
-│   │   └── main.go
-│   ├── apiserver/                  # gRPC + REST API server
-│   │   └── main.go
-│   └── bridge/                     # Bridge sidecar (runs in sandbox pods)
-│       └── main.go
-│
-├── internal/                       # Private application code
-│   ├── controller/                 # Kubernetes controllers
-│   │   ├── pool/
-│   │   │   ├── reconciler.go       # Pool scaling logic
-│   │   │   └── reconciler_test.go
-│   │   ├── sandbox/
-│   │   │   ├── reconciler.go       # Pod/PVC/NetworkPolicy creation
-│   │   │   └── reconciler_test.go
-│   │   ├── workflow/
-│   │   │   ├── reconciler.go       # DAG validation, task creation
-│   │   │   └── reconciler_test.go
-│   │   ├── task/
-│   │   │   ├── reconciler.go       # Sandbox claiming, session creation
-│   │   │   └── reconciler_test.go
-│   │   └── session/
-│   │       ├── reconciler.go       # Bridge connection, event streaming
-│   │       └── reconciler_test.go
-│   │
-│   ├── bridge/                     # Bridge sidecar implementation
-│   │   ├── bridge.go               # Core Bridge struct and lifecycle
-│   │   ├── session.go              # Session management via SDK
-│   │   ├── events.go               # Event normalization (SDK → NATS)
-│   │   ├── credentials.go          # HTTP credential proxy
-│   │   └── workspace.go            # Workspace preparation and artifact extraction
-│   │
-│   ├── apiserver/                  # API server implementation
-│   │   ├── server.go               # gRPC server setup
-│   │   ├── handlers/               # Request handlers per resource
-│   │   │   ├── workflow.go
-│   │   │   ├── task.go
-│   │   │   ├── pool.go
-│   │   │   └── session.go
-│   │   └── stream/                 # SSE event streaming
-│   │       └── stream.go
-│   │
-│   ├── nats/                       # NATS JetStream client and stream config
-│   │   ├── client.go
-│   │   ├── streams.go              # Stream/consumer definitions
-│   │   └── publisher.go
-│   │
-│   ├── sdk/                        # Generated Sandbox Agent SDK client
-│   │   └── client.go               # Go client wrapping SDK HTTP API (:2468)
-│   │
-│   ├── webhook/                    # Webhook dispatcher
-│   │   └── dispatcher.go
-│   │
-│   └── otel/                       # OpenTelemetry setup and exporters
-│       ├── metrics.go
-│       └── tracing.go
-│
-├── config/                         # Kubernetes manifests (kustomize)
-│   ├── crd/                        # Generated CRD YAML
-│   │   └── bases/
-│   ├── manager/                    # Controller manager deployment
-│   ├── apiserver/                  # API server deployment
-│   ├── rbac/                       # RBAC roles and bindings
-│   ├── nats/                       # NATS JetStream StatefulSet
-│   ├── samples/                    # Example CRs
-│   │   ├── pool.yaml
-│   │   ├── agentconfig-claude.yaml
-│   │   ├── workflow.yaml
-│   │   └── task.yaml
-│   └── default/                    # Default kustomization overlay
-│
-├── scripts/                        # Development and CI scripts
-│   ├── setup.sh                    # Install Go toolchain and dependencies
-│   ├── pre-commit.sh               # Pre-commit checks (vet, lint, build, spec)
-│   └── pre-push.sh                 # Pre-push checks (test, spec consistency)
-│
-├── spec/                           # System specification (progressive disclosure)
-│   ├── README.md
-│   ├── 01-vision-and-goals.md
-│   ├── 02-concepts-and-terminology.md
-│   ├── 03-architecture-overview.md
-│   ├── 04-control-plane.md
-│   ├── 05-sandbox-runtime.md
-│   ├── 06-agent-adapter.md
-│   ├── 07-orchestration-engine.md
-│   ├── 08-observability-and-events.md
-│   ├── 09-security-model.md
-│   └── 10-prior-art.md
-│
-├── hack/                           # Code generation and dev tooling
-│   ├── boilerplate.go.txt          # License header for generated code
-│   └── generate.sh                 # Run controller-gen, oapi-codegen
-│
-├── .claude/
-│   └── settings.json               # Claude Code hooks (pre-commit, pre-push)
-│
-├── CLAUDE.md                       # Claude Code project context
-├── Dockerfile                      # Multi-stage build (controller-manager, apiserver, bridge)
-├── Makefile                        # Build, test, generate, deploy targets
-├── go.mod
-└── go.sum
+api/v1alpha1/       CRD type definitions (factory.example.com/v1alpha1)
+cmd/                Binary entry points (one per deployable)
+internal/           Private application code
+config/             Kubernetes manifests (kustomize)
+spec/               System specification (progressive disclosure)
+hack/               Code generation and dev tooling
+scripts/            Development and CI scripts
 ```
 
-## Key Design Decisions
+## Binaries
 
-**One module, three binaries.** All Go code lives in a single module. The `cmd/` directory has three entry points:
-- `controller-manager` — runs all five controllers (pool, sandbox, workflow, task, session) in one process, standard for controller-runtime projects
-- `apiserver` — gRPC + REST gateway for external clients
-- `bridge` — sidecar binary deployed inside each sandbox pod
+Three binaries, one Go module:
 
-**CRDs in `api/`, controllers in `internal/controller/`.** Follows kubebuilder conventions. Each controller gets its own package to keep reconciliation logic isolated and independently testable.
+| Binary | Directory | Description |
+|--------|-----------|-------------|
+| `controller-manager` | `cmd/controller-manager/` | Runs all control plane controllers in one process |
+| `apiserver` | `cmd/apiserver/` | gRPC + REST gateway for external clients |
+| `bridge` | `cmd/bridge/` | Sidecar binary deployed inside each sandbox pod |
 
-**Bridge sidecar as a separate package.** `internal/bridge/` contains the Go code that runs inside sandbox pods. It talks to the Sandbox Agent SDK over HTTP (:2468), normalizes events, and publishes to NATS. This is the only code that imports the SDK client.
+## CRDs
 
-**Generated SDK client in `internal/sdk/`.** The Sandbox Agent SDK exposes an OpenAPI spec. We generate a Go client from it rather than hand-rolling HTTP calls.
+All types live in `api/v1alpha1/` under the `factory.example.com/v1alpha1` API group:
 
-**Shared infrastructure packages.** `internal/nats/` and `internal/otel/` are used by multiple binaries (controllers publish events, bridge publishes events, apiserver consumes events).
+| CRD | Purpose |
+|-----|---------|
+| **Pool** | Warm sandbox pool with scaling config (min/max replicas, idle timeout) |
+| **Sandbox** | Single isolated execution environment with lifecycle management |
+| **AgentConfig** | Agent runtime configuration (SDK image, bridge image, credentials) |
+| **Workflow** | DAG of tasks with shared context and dependency tracking |
+| **Task** | Unit of work — claims a sandbox, runs a prompt, produces outputs |
+| **Session** | Agent session lifecycle bridging control plane and sandbox |
+| **WorkflowTemplate** | Reusable parameterized workflow patterns |
+| **WebhookSubscription** | External webhook subscriptions for workflow/task events |
 
-**Kustomize for deployment.** `config/` follows the standard kustomize layout with base manifests and overlays. CRD YAML is generated from the Go types via `controller-gen`.
+## Controllers
+
+Each controller gets its own package under `internal/controller/` for isolation and independent testing:
+
+| Controller | Package | Watches | Responsibility |
+|------------|---------|---------|----------------|
+| **Pool** | `internal/controller/pool/` | Pool, Sandbox | Maintain warm pool size, scale up on demand, terminate idle sandboxes |
+| **Sandbox** | `internal/controller/sandbox/` | Sandbox, Pod | Create pods (init + SDK + bridge), provision PVCs, apply NetworkPolicy |
+| **Workflow** | `internal/controller/workflow/` | Workflow, Task | Validate DAG, create root tasks, advance on task completion |
+| **Task** | `internal/controller/task/` | Task, Sandbox | Claim sandbox from pool, create session, extract outputs on completion |
+| **Session** | `internal/controller/session/` | Session | Connect to bridge sidecar, stream events via NATS, track token usage |
+
+## Internal Packages
+
+| Package | Description |
+|---------|-------------|
+| `internal/bridge/` | Bridge sidecar — session management, event normalization (SDK → NATS), credential proxy, workspace preparation. Only package that imports the SDK client. |
+| `internal/apiserver/` | API server — gRPC service definitions, REST handlers, SSE event streaming |
+| `internal/sdk/` | Generated Go client for Sandbox Agent SDK HTTP API (:2468) |
+| `internal/nats/` | NATS JetStream client, stream/consumer definitions, event publishing |
+| `internal/otel/` | OpenTelemetry metrics and tracing setup |
+| `internal/webhook/` | Webhook dispatcher for external event subscriptions |
+
+## Deployment Manifests
+
+`config/` uses kustomize with generated CRDs:
+
+| Directory | Contents |
+|-----------|----------|
+| `config/crd/` | Generated CRD YAML (via `controller-gen`) |
+| `config/manager/` | Controller manager deployment |
+| `config/apiserver/` | API server deployment |
+| `config/rbac/` | Roles and bindings |
+| `config/nats/` | NATS JetStream StatefulSet |
+| `config/samples/` | Example CRs (Pool, AgentConfig, Workflow, Task) |
+| `config/default/` | Default kustomization overlay |
 
 ## Build
 
 ```bash
-make generate    # Run controller-gen (CRDs, RBAC) and oapi-codegen (SDK client)
-make build       # Build all three binaries
-make test        # Run unit tests
-make lint        # Run golangci-lint
-make manifests   # Generate CRD YAML into config/crd/bases/
+make generate     # Run controller-gen (CRDs, RBAC) and oapi-codegen (SDK client)
+make build        # Build all three binaries
+make test         # Run unit tests
+make lint         # Run golangci-lint
+make manifests    # Generate CRD YAML into config/crd/bases/
 make docker-build # Multi-stage Docker build
 ```
