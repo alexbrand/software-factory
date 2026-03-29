@@ -4,11 +4,11 @@
 
 ## Overview
 
-The adapter layer provides the interface between the orchestration control plane and the coding harness (agent) running inside a sandbox. Rather than building our own agent adapter framework, we adopt the [Sandbox Agent SDK](https://sandboxagent.dev/) as the in-sandbox runtime and build a thin Go bridge that connects it to our Kubernetes control plane.
+The adapter layer provides the interface between the orchestration control plane and the agent harness running inside a sandbox. Rather than building our own agent adapter framework, we adopt the [Sandbox Agent SDK](https://sandboxagent.dev/) as the in-sandbox runtime and build a thin Go bridge that connects it to our Kubernetes control plane.
 
 ### Why Sandbox Agent SDK
 
-The Sandbox Agent SDK already solves the hardest part of this problem: normalizing across diverse coding agents. Building our own would mean:
+The Sandbox Agent SDK already solves the hardest part of this problem: normalizing across diverse agent harnesses. Building our own would mean:
 
 - Writing and maintaining individual adapters for Claude Code, Codex, Pi, OpenCode, Amp, Cursor (and future agents)
 - Designing a session protocol, event schema, and process management layer

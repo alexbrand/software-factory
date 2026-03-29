@@ -12,7 +12,7 @@ This document analyzes existing projects that solve related problems. Each is ev
 
 ### What It Does
 
-A Rust-based universal control layer for coding agents. It wraps six agents (Claude Code, Codex, OpenCode, Cursor, Amp, Pi) behind a single HTTP/SSE API with a normalized event schema. Runs inside sandbox environments from various providers (E2B, Daytona, Modal, Docker, etc.).
+A Rust-based universal control layer for AI agents. It wraps six agents (Claude Code, Codex, OpenCode, Cursor, Amp, Pi) behind a single HTTP/SSE API with a normalized event schema. Runs inside sandbox environments from various providers (E2B, Daytona, Modal, Docker, etc.).
 
 ### Decision: Adopt as In-Sandbox Runtime
 

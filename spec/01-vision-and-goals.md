@@ -6,12 +6,12 @@
 
 Build a Kubernetes-native platform that orchestrates fleets of AI agents in stateful, isolated sandboxes. The platform treats agents as a first-class workload type — similar to how Kubernetes treats containers — providing primitives for lifecycle management, scheduling, observability, and coordination.
 
-The system is **agent-agnostic**: it does not embed any specific coding agent. Instead, it provides a universal adapter interface (via the [Sandbox Agent SDK](https://sandboxagent.dev/)) that supports any coding harness (Claude Code, Codex, Pi, Aider, etc.), allowing operators to choose — or mix — agents based on the task at hand.
+The system is **agent-agnostic**: it does not embed any specific agent. Instead, it provides a universal adapter interface (via the [Sandbox Agent SDK](https://sandboxagent.dev/)) that supports any agent harness (Claude Code, Codex, Pi, Aider, etc.), allowing operators to choose — or mix — agents based on the task at hand.
 
 ## Goals
 
 ### G1: Universal Agent Runtime
-Support multiple coding harnesses through a common adapter interface. Operators should be able to swap agents without changing their orchestration logic. Initially target: Claude Code, Codex, and Pi.
+Support multiple agent harnesses through a common adapter interface. Operators should be able to swap agents without changing their orchestration logic. Initially target: Claude Code, Codex, and Pi.
 
 ### G2: Stateful Sandboxes
 Provide persistent, isolated execution environments where agents can work across sessions without re-cloning repositories or reinstalling dependencies. Sandbox state (filesystem, installed packages, running processes) survives agent restarts and can be snapshotted/restored.
@@ -30,21 +30,21 @@ Isolate tenants at the namespace level. Agents run in sandboxed containers with 
 
 ## Use Cases
 
-### UC1: Fleet Software Development
-An engineering team submits a feature specification. The system decomposes it into implementation tasks, assigns each to a coding agent, and coordinates integration. Human reviewers approve merge-ready results.
+### UC1: Fleet Task Execution
+An organization submits a complex goal (feature specification, research brief, data migration plan). The system decomposes it into tasks, assigns each to an agent, and coordinates results. Human reviewers approve final outputs. Example: an engineering team decomposes a feature spec into implementation subtasks across a pool of coding agents.
 
 ### UC2: Custom Tool-Using Agents
 A platform team builds domain-specific agents that use MCP tools to interact with internal systems (databases, APIs, dashboards). The orchestration system manages their lifecycle and provides sandboxed execution.
 
-### UC3: CI/CD Agent Integration
-Coding agents are triggered by CI events (PR opened, review requested, test failure) and run within the orchestration system to suggest fixes, write tests, or perform code review.
+### UC3: Event-Triggered Agents
+Agents are triggered by external events (webhooks, schedules, CI signals) and run within the orchestration system to perform tasks autonomously. Examples: a coding agent responds to CI failures with fixes, a personal assistant agent processes incoming emails, or a monitoring agent triages alerts.
 
 ### UC4: Batch Processing
 A large-scale migration or refactoring task is split across hundreds of repositories. The system schedules agents across the fleet, throttling concurrency to respect API rate limits and cluster resources.
 
 ## Non-Goals
 
-- **Building a coding agent.** We orchestrate existing agents; we don't build one.
+- **Building an agent.** We orchestrate existing agents; we don't build one.
 - **Replacing Kubernetes.** We extend Kubernetes, not replace it.
 - **LLM hosting.** We call LLM APIs; we don't serve models. (GPU scheduling for self-hosted models is a future consideration but out of scope for v1.)
 - **General-purpose workflow engine.** The orchestration engine is purpose-built for agent workloads. Use Argo Workflows or Tekton for generic CI/CD pipelines.
