@@ -1,0 +1,78 @@
+# Google Calendar MCP server managed by ToolHive
+apiVersion: toolhive.stacklok.com/v1alpha1
+kind: MCPServer
+metadata:
+  name: google-calendar
+  namespace: assistant-ns
+  labels:
+    toolhive.stacklok.com/group: assistant-tools
+spec:
+  image: ghcr.io/toolhive-mcp/google-calendar:latest
+  transport: sse
+  permissions:
+    network:
+      outbound:
+        allowedDomains:
+          - "*.googleapis.com"
+          - "oauth2.googleapis.com"
+  secretMappings:
+    - secretName: google-oauth-credentials
+      secretKey: client-id
+      envVar: GOOGLE_CLIENT_ID
+    - secretName: google-oauth-credentials
+      secretKey: client-secret
+      envVar: GOOGLE_CLIENT_SECRET
+    - secretName: google-oauth-credentials
+      secretKey: refresh-token
+      envVar: GOOGLE_REFRESH_TOKEN
+---
+# Gmail MCP server managed by ToolHive
+apiVersion: toolhive.stacklok.com/v1alpha1
+kind: MCPServer
+metadata:
+  name: gmail
+  namespace: assistant-ns
+  labels:
+    toolhive.stacklok.com/group: assistant-tools
+spec:
+  image: ghcr.io/toolhive-mcp/gmail:latest
+  transport: sse
+  permissions:
+    network:
+      outbound:
+        allowedDomains:
+          - "*.googleapis.com"
+          - "oauth2.googleapis.com"
+  secretMappings:
+    - secretName: google-oauth-credentials
+      secretKey: client-id
+      envVar: GOOGLE_CLIENT_ID
+    - secretName: google-oauth-credentials
+      secretKey: client-secret
+      envVar: GOOGLE_CLIENT_SECRET
+    - secretName: google-oauth-credentials
+      secretKey: refresh-token
+      envVar: GOOGLE_REFRESH_TOKEN
+---
+# Group the MCP servers together
+apiVersion: toolhive.stacklok.com/v1alpha1
+kind: MCPGroup
+metadata:
+  name: assistant-tools
+  namespace: assistant-ns
+spec:
+  selector:
+    matchLabels:
+      toolhive.stacklok.com/group: assistant-tools
+---
+# Virtual MCP server aggregating both behind a single endpoint
+apiVersion: toolhive.stacklok.com/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: assistant-vmcp
+  namespace: assistant-ns
+spec:
+  groupRef:
+    name: assistant-tools
+  # Tools are auto-namespaced: calendar_list_events, gmail_search_messages, etc.
+  toolNamespacing: true

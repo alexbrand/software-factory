@@ -1,0 +1,51 @@
+# Target namespace where the agent deploys applications
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-staging
+---
+# ServiceAccount for sandbox pods — lives in the orchestration namespace
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-deployer
+  namespace: team-alpha
+---
+# Role granting deployment permissions in app-staging
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-deployer
+  namespace: app-staging
+rules:
+  # Workload management
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Core resources
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pod troubleshooting
+  - apiGroups: [""]
+    resources: ["pods/log", "pods/status", "events"]
+    verbs: ["get", "list", "watch"]
+  # Networking
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Bind the role to the sandbox ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sandbox-deployer
+  namespace: app-staging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-deployer
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-deployer
+    namespace: team-alpha

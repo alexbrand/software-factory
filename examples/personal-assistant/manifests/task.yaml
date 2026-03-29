@@ -1,0 +1,25 @@
+apiVersion: factory.example.com/v1alpha1
+kind: Task
+metadata:
+  name: schedule-followup
+  namespace: assistant-ns
+spec:
+  poolRef:
+    name: assistant-pool
+
+  prompt: |
+    You are a personal assistant with access to Google Calendar and Gmail.
+
+    1. Search Gmail for the email thread with subject containing "Q2 planning"
+       from the past week.
+    2. Identify all participants on that thread.
+    3. Check my calendar for available 1-hour slots tomorrow afternoon
+       (between 1pm and 5pm).
+    4. Create a calendar event titled "Q2 Planning Follow-up" at the first
+       available slot. Invite all participants from the email thread.
+    5. Draft a reply to the email thread letting everyone know about the meeting.
+
+    Summarize what you did when finished.
+
+  timeout: 10m
+  retries: 1
