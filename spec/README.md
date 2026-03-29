@@ -2,7 +2,7 @@
 
 ## Overview
 
-This specification describes an **agent orchestration system built on Kubernetes** that enables running, managing, and coordinating fleets of AI coding agents (harnesses) in stateful sandboxes. The system provides a universal adapter interface across multiple coding harnesses (Claude Code, Codex, Pi, etc.) and supports use cases ranging from fleet-based software development to custom tool-using agents.
+This specification describes an **agent orchestration system built on Kubernetes** that enables running, managing, and coordinating fleets of AI agents in stateful sandboxes. The system provides a universal adapter interface (via the Sandbox Agent SDK) across multiple agent harnesses (Claude Code, Codex, Pi, etc.) and supports use cases ranging from fleet-based software development to personal assistants, custom tool-using agents, and batch automation.
 
 ## Reading Guide
 

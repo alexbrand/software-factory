@@ -10,12 +10,12 @@ This document defines the core domain model and key abstractions used throughout
 An AI-powered program that can perform tasks by reasoning, using tools, and producing artifacts. Agents are opaque to the system — the platform manages their lifecycle but does not control their internal reasoning. Examples: Claude Code, Codex, Pi.
 
 ### Harness (Industry Term)
-In industry usage, a *harness* refers to the complete runtime wrapping an LLM that makes it a functional coding agent — the tools, context management, feedback loops, and execution environment. **Claude Code, Codex, and Pi are all coding harnesses.** We do not use this term as a system concept in our platform, but reference it for alignment with industry terminology.
+In industry usage, a *harness* refers to the complete runtime wrapping an LLM that makes it a functional agent — the tools, context management, feedback loops, and execution environment. **Claude Code, Codex, and Pi are all agent harnesses.** We do not use this term as a system concept in our platform, but reference it for alignment with industry terminology.
 
 ### Adapter
-The translation layer (provided by the [Sandbox Agent SDK](https://sandboxagent.dev/)) that normalizes different coding harnesses behind a universal HTTP API. The SDK handles the per-agent differences; our platform consumes the SDK's unified interface via a bridge sidecar.
+The translation layer (provided by the [Sandbox Agent SDK](https://sandboxagent.dev/)) that normalizes different agent harnesses behind a universal HTTP API. The SDK handles the per-agent differences; our platform consumes the SDK's unified interface via a bridge sidecar.
 
-Think of it as: **The coding harness is the car. The adapter (SDK) is the OBD port that lets any diagnostic tool talk to any car.**
+Think of it as: **The agent harness is the car. The adapter (SDK) is the OBD port that lets any diagnostic tool talk to any car.**
 
 ### Sandbox
 An isolated, stateful execution environment in which an agent runs. A sandbox consists of:
@@ -39,7 +39,7 @@ Sessions are immutable once completed and can be replayed for debugging.
 A unit of work assigned to an agent. Tasks are defined by:
 - A **specification** (natural language instruction, context files, constraints)
 - **Inputs** (artifacts from upstream tasks, configuration)
-- **Expected outputs** (files modified, PRs created, test results)
+- **Expected outputs** (files modified, reports generated, API calls made)
 - **Resource requirements** (sandbox size, timeout, agent type preference)
 
 ### Workflow
