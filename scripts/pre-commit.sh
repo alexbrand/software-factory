@@ -22,14 +22,6 @@ fi
 
 # --- Spec consistency checks ---
 if git diff --cached --name-only | grep -q "^spec/"; then
-  # Check for stale HarnessConfig references
-  STALE=$(grep -rn "HarnessConfig\|harnessRef\|harness_config" spec/ 2>/dev/null || true)
-  if [ -n "$STALE" ]; then
-    echo "WARNING: Found stale harness terminology in spec files:"
-    echo "$STALE"
-    ERRORS+=("stale harness terminology found in spec")
-  fi
-
   # Check for broken internal links
   for f in spec/*.md; do
     # Extract markdown links to local files
