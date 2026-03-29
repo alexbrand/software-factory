@@ -14,7 +14,7 @@ Every agent session, task, and workflow produces structured telemetry. Observabi
 Agent Process
     │
     ▼ (native events)
-Harness (Event Normalizer)
+Sandbox Agent SDK → Bridge Sidecar (Event Normalizer)
     │
     ▼ (normalized events)
 NATS JetStream
@@ -115,7 +115,7 @@ Trace context is propagated:
 
 The OpenTelemetry Collector receives spans from:
 - Control plane operators (Go instrumentation via `go.opentelemetry.io/otel`)
-- Harness processes (span per tool call)
+- Bridge sidecar processes (span per tool call)
 - NATS event metadata (correlated by trace ID)
 
 Exporters: Jaeger, Tempo, or any OTLP-compatible backend.

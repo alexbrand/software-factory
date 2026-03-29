@@ -9,10 +9,13 @@ This document defines the core domain model and key abstractions used throughout
 ### Agent
 An AI-powered program that can perform tasks by reasoning, using tools, and producing artifacts. Agents are opaque to the system — the platform manages their lifecycle but does not control their internal reasoning. Examples: Claude Code, Codex, Pi.
 
-### Harness
-The adapter layer that wraps a specific agent implementation and exposes it through the platform's universal interface. Each supported agent type has a corresponding harness. The harness translates between the platform's session protocol and the agent's native CLI/API.
+### Harness (Industry Term)
+In industry usage, a *harness* refers to the complete runtime wrapping an LLM that makes it a functional coding agent — the tools, context management, feedback loops, and execution environment. **Claude Code, Codex, and Pi are all coding harnesses.** We do not use this term as a system concept in our platform, but reference it for alignment with industry terminology.
 
-Think of it as: **Agent is the engine, Harness is the mounting bracket.**
+### Adapter
+The translation layer (provided by the [Sandbox Agent SDK](https://sandboxagent.dev/)) that normalizes different coding harnesses behind a universal HTTP API. The SDK handles the per-agent differences; our platform consumes the SDK's unified interface via a bridge sidecar.
+
+Think of it as: **The coding harness is the car. The adapter (SDK) is the OBD port that lets any diagnostic tool talk to any car.**
 
 ### Sandbox
 An isolated, stateful execution environment in which an agent runs. A sandbox consists of:
@@ -54,7 +57,7 @@ Tasks B and C run in parallel after A completes. Task D waits for both B and C.
 A set of pre-provisioned sandboxes ready to accept tasks. Pools are defined by:
 - **Sandbox template** (base image, pre-installed tools, volume size)
 - **Scale bounds** (min/max replicas)
-- **Agent harness type**
+- **Agent type** (via `AgentConfig` reference)
 
 Pools amortize sandbox startup cost by keeping warm instances available.
 
@@ -74,7 +77,7 @@ Tenant (Namespace)
 │       └── Session (0..N)
 ├── Workflow
 │   └── Task (1..N)
-└── HarnessConfig
+└── AgentConfig
 ```
 
 ## Lifecycle States
@@ -117,5 +120,5 @@ Pending → Scheduled → Running → [Succeeded | Failed | Cancelled]
 - A **Workflow** contains one or more **Tasks** connected by dependency edges.
 - A **Task** runs in exactly one **Sandbox** (but a Sandbox may be reused across Tasks).
 - A **Sandbox** belongs to a **Pool** and runs one **Session** at a time.
-- A **Harness** is configured per-Pool (all sandboxes in a pool use the same harness).
+- An **AgentConfig** is configured per-Pool (all sandboxes in a pool use the same agent type).
 - A **Tenant** owns Pools, Workflows, and all resources within its namespace.

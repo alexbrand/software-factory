@@ -116,7 +116,7 @@ The warmup process runs in the init container and prepares the sandbox for work:
 2. **Git clone**: Clone specified repositories into `/workspace/repo/`.
 3. **Dependency install**: Run warmup commands (e.g., `npm install`, `pip install -r requirements.txt`).
 4. **Cache population**: Populate `.cache/` directories.
-5. **Health check**: Verify the harness is responsive.
+5. **Health check**: Verify the SDK and bridge sidecar are responsive.
 
 ### Warmup Optimization Strategies
 
