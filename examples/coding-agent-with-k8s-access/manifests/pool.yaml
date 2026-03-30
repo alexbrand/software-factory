@@ -1,0 +1,60 @@
+apiVersion: factory.example.com/v1alpha1
+kind: Pool
+metadata:
+  name: claude-k8s-pool
+  namespace: team-alpha
+spec:
+  agentConfigRef:
+    name: claude-k8s
+
+  replicas:
+    min: 1
+    max: 5
+    idleTimeout: 15m
+    scaleUpThreshold: 0.8
+
+  sandboxTemplate:
+    # ServiceAccount with RBAC access to app-staging
+    serviceAccountName: sandbox-deployer
+
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+
+    storage:
+      size: 50Gi
+      storageClassName: fast-ssd
+      reclaimPolicy: Retain
+
+    warmup:
+      image: ghcr.io/example/sandbox-base:latest
+      commands:
+        # Install kubectl
+        - |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+        # Install Docker CLI (for building images)
+        - |
+          apt-get update && apt-get install -y docker-ce-cli
+        # Install common build tools
+        - |
+          apt-get install -y build-essential git
+
+    networkPolicy:
+      egressRules:
+        # Anthropic API (for agent LLM calls)
+        - to: ["api.anthropic.com"]
+          ports: [443]
+        # Kubernetes API server (for kubectl)
+        - to: ["kubernetes.default.svc"]
+          ports: [443]
+        # Container registry (for pushing/pulling images)
+        - to: ["ghcr.io", "*.githubusercontent.com"]
+          ports: [443]
+        # Git (for cloning repos)
+        - to: ["github.com"]
+          ports: [443]

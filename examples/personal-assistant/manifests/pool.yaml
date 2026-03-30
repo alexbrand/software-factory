@@ -1,0 +1,42 @@
+apiVersion: factory.example.com/v1alpha1
+kind: Pool
+metadata:
+  name: assistant-pool
+  namespace: assistant-ns
+spec:
+  agentConfigRef:
+    name: pi-assistant
+
+  replicas:
+    min: 1
+    max: 3
+    idleTimeout: 10m
+    scaleUpThreshold: 0.8
+
+  sandboxTemplate:
+    resources:
+      requests:
+        cpu: "1"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+
+    storage:
+      size: 10Gi
+      storageClassName: standard
+      reclaimPolicy: Delete    # No state worth preserving between tasks
+
+    # MCP tools via ToolHive VirtualMCPServer
+    mcpTools:
+      vmcpRef:
+        name: assistant-vmcp    # VirtualMCPServer in same namespace
+
+    networkPolicy:
+      egressRules:
+        # Anthropic API (for agent LLM calls)
+        - to: ["api.anthropic.com"]
+          ports: [443]
+        # Google APIs (accessed via MCP servers, but the vMCP proxy
+        # is cluster-internal — these rules are for the MCP server
+        # pods themselves, not the sandbox)

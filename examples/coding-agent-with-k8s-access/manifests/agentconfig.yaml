@@ -1,0 +1,40 @@
+apiVersion: factory.example.com/v1alpha1
+kind: AgentConfig
+metadata:
+  name: claude-k8s
+  namespace: team-alpha
+spec:
+  agentType: claude-code
+  displayName: "Claude Code (K8s Deploy)"
+
+  sdk:
+    image: ghcr.io/rivet-dev/sandbox-agent:v0.4.2
+    port: 2468
+
+  bridge:
+    image: ghcr.io/example/factory-bridge:v0.1.0
+    port: 8080
+    healthCheck:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 10
+
+  agentSettings:
+    contextFile: CLAUDE.md
+    allowedTools:
+      - bash
+      - read
+      - write
+      - edit
+      - glob
+      - grep
+
+  credentials:
+    - name: ANTHROPIC_API_KEY
+      secretRef:
+        name: anthropic-credentials
+        key: api-key
+      host: api.anthropic.com
+      header: x-api-key

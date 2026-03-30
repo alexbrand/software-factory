@@ -1,0 +1,27 @@
+apiVersion: factory.example.com/v1alpha1
+kind: Task
+metadata:
+  name: deploy-web-app
+  namespace: team-alpha
+spec:
+  poolRef:
+    name: claude-k8s-pool
+
+  prompt: |
+    You have access to the app-staging Kubernetes namespace via kubectl.
+
+    1. Clone the repository at https://github.com/example/web-app.git
+    2. Review the application code and write a Dockerfile
+    3. Build the container image and push to ghcr.io/example/web-app:latest
+    4. Write Kubernetes manifests (Deployment, Service) and apply them to app-staging
+    5. Wait for the deployment to be ready. If pods are failing, inspect logs and fix the issue.
+    6. Verify the service is reachable by port-forwarding and making a test request.
+
+    Save all manifests to /workspace/output/k8s/ when done.
+
+  outputs:
+    - path: /workspace/output/k8s/
+      artifact: k8s-manifests
+
+  timeout: 30m
+  retries: 2
