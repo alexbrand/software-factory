@@ -2,9 +2,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,6 +17,7 @@ import (
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
 	"github.com/alexbrand/software-factory/internal/bridge"
+	"github.com/alexbrand/software-factory/pkg/events"
 )
 
 const (
@@ -34,11 +37,18 @@ type BridgeClient interface {
 	GetHealth(ctx context.Context) (*bridge.HealthStatus, error)
 }
 
+// EventPublisher defines the interface for publishing events.
+// This allows injection of mock publishers for testing.
+type EventPublisher interface {
+	Publish(ctx context.Context, namespace string, event events.Event) error
+}
+
 // SessionReconciler reconciles a Session object.
 type SessionReconciler struct {
 	client.Client
-	Scheme             *runtime.Scheme
+	Scheme              *runtime.Scheme
 	BridgeClientFactory BridgeClientFactory
+	EventPublisher      EventPublisher
 }
 
 // +kubebuilder:rbac:groups=factory.example.com,resources=sessions,verbs=get;list;watch;create;update;patch;delete
@@ -113,6 +123,12 @@ func (r *SessionReconciler) reconcilePending(ctx context.Context, session *facto
 		return ctrl.Result{}, fmt.Errorf("updating session status to Active: %w", err)
 	}
 
+	r.publishEvent(ctx, session, events.EventSessionStarted, events.SessionStartedData{
+		AgentType: session.Spec.AgentType,
+		Prompt:    session.Spec.Prompt,
+		Namespace: session.Namespace,
+	})
+
 	return ctrl.Result{RequeueAfter: sessionHealthCheckInterval}, nil
 }
 
@@ -131,6 +147,9 @@ func (r *SessionReconciler) reconcileActive(ctx context.Context, session *factor
 		if err := r.Status().Update(ctx, session); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating session to Failed (pod gone): %w", err)
 		}
+		r.publishEvent(ctx, session, events.EventSessionFailed, events.SessionFailedData{
+			Reason: "sandbox pod disappeared",
+		})
 		return ctrl.Result{}, nil
 	}
 
@@ -151,6 +170,7 @@ func (r *SessionReconciler) reconcileActive(ctx context.Context, session *factor
 		if err := r.Status().Update(ctx, session); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating session to Completed: %w", err)
 		}
+		r.publishEvent(ctx, session, events.EventSessionCompleted, events.SessionCompletedData{})
 		return ctrl.Result{}, nil
 	}
 
@@ -213,6 +233,37 @@ func (r *SessionReconciler) newBridgeClient(baseURL string) BridgeClient {
 		return r.BridgeClientFactory(baseURL)
 	}
 	return bridge.NewClient(baseURL)
+}
+
+// publishEvent publishes a session lifecycle event if a publisher is configured.
+func (r *SessionReconciler) publishEvent(ctx context.Context, session *factoryv1alpha1.Session, eventType events.EventType, data any) {
+	if r.EventPublisher == nil {
+		return
+	}
+	logger := log.FromContext(ctx)
+
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		logger.Error(err, "marshalling event data", "eventType", eventType)
+		return
+	}
+
+	sessionID := session.Name
+	if session.Status.EventStreamSubject != "" {
+		sessionID = session.Status.EventStreamSubject[len("sessions."):]
+	}
+
+	event := events.Event{
+		ID:        uuid.New().String(),
+		SessionID: sessionID,
+		Timestamp: time.Now().UTC(),
+		Type:      eventType,
+		Data:      dataBytes,
+	}
+
+	if err := r.EventPublisher.Publish(ctx, session.Namespace, event); err != nil {
+		logger.Error(err, "publishing event", "eventType", eventType, "sessionID", sessionID)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

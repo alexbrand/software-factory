@@ -14,7 +14,22 @@ import (
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
 	"github.com/alexbrand/software-factory/internal/bridge"
+	"github.com/alexbrand/software-factory/pkg/events"
 )
+
+// fakeEventPublisher records published events for testing.
+type fakeEventPublisher struct {
+	events []events.Event
+	err    error
+}
+
+func (f *fakeEventPublisher) Publish(_ context.Context, _ string, event events.Event) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.events = append(f.events, event)
+	return nil
+}
 
 // fakeBridgeClient implements BridgeClient for testing.
 type fakeBridgeClient struct {
@@ -52,7 +67,7 @@ func (f *fakeBridgeClient) GetHealth(_ context.Context) (*bridge.HealthStatus, e
 	return f.healthStatus, f.healthErr
 }
 
-func newSessionReconciler(objs []client.Object, bc *fakeBridgeClient) *SessionReconciler {
+func newSessionReconciler(objs []client.Object, bc *fakeBridgeClient, ep *fakeEventPublisher) *SessionReconciler {
 	scheme := newScheme()
 	_ = corev1.AddToScheme(scheme)
 
@@ -64,13 +79,17 @@ func newSessionReconciler(objs []client.Object, bc *fakeBridgeClient) *SessionRe
 		cb = cb.WithObjects(objs...)
 	}
 
-	return &SessionReconciler{
+	r := &SessionReconciler{
 		Client: cb.Build(),
 		Scheme: scheme,
 		BridgeClientFactory: func(_ string) BridgeClient {
 			return bc
 		},
 	}
+	if ep != nil {
+		r.EventPublisher = ep
+	}
+	return r
 }
 
 func newPod(name, namespace, ip string) *corev1.Pod {
@@ -91,15 +110,16 @@ func newPod(name, namespace, ip string) *corev1.Pod {
 
 func TestSessionReconcile(t *testing.T) {
 	tests := []struct {
-		name         string
-		session      *factoryv1alpha1.Session
-		sandbox      *factoryv1alpha1.Sandbox
-		pod          *corev1.Pod
-		bridgeClient *fakeBridgeClient
-		wantPhase    factoryv1alpha1.SessionPhase
-		wantRequeue  bool
-		wantErr      bool
-		checkBridge  func(t *testing.T, bc *fakeBridgeClient)
+		name           string
+		session        *factoryv1alpha1.Session
+		sandbox        *factoryv1alpha1.Sandbox
+		pod            *corev1.Pod
+		bridgeClient   *fakeBridgeClient
+		wantPhase      factoryv1alpha1.SessionPhase
+		wantRequeue    bool
+		wantErr        bool
+		checkBridge    func(t *testing.T, bc *fakeBridgeClient)
+		wantEventTypes []events.EventType
 	}{
 		{
 			name: "pending session starts on bridge",
@@ -129,9 +149,10 @@ func TestSessionReconcile(t *testing.T) {
 				},
 			},
 			pod:          newPod("test-pod", "default", "10.0.0.1"),
-			bridgeClient: &fakeBridgeClient{startSessionID: "bridge-sess-1"},
-			wantPhase:    factoryv1alpha1.SessionPhaseActive,
-			wantRequeue:  true,
+			bridgeClient:   &fakeBridgeClient{startSessionID: "bridge-sess-1"},
+			wantPhase:      factoryv1alpha1.SessionPhaseActive,
+			wantRequeue:    true,
+			wantEventTypes: []events.EventType{events.EventSessionStarted},
 			checkBridge: func(t *testing.T, bc *fakeBridgeClient) {
 				if !bc.startCalled {
 					t.Error("expected StartSession to be called")
@@ -244,8 +265,9 @@ func TestSessionReconcile(t *testing.T) {
 					ActiveSessions: 0,
 				},
 			},
-			wantPhase:   factoryv1alpha1.SessionPhaseCompleted,
-			wantRequeue: false,
+			wantPhase:      factoryv1alpha1.SessionPhaseCompleted,
+			wantRequeue:    false,
+			wantEventTypes: []events.EventType{events.EventSessionCompleted},
 		},
 		{
 			name: "active session stays active when sessions still running",
@@ -311,9 +333,10 @@ func TestSessionReconcile(t *testing.T) {
 					PodName: "",
 				},
 			},
-			bridgeClient: &fakeBridgeClient{},
-			wantPhase:    factoryv1alpha1.SessionPhaseFailed,
-			wantRequeue:  false,
+			bridgeClient:   &fakeBridgeClient{},
+			wantPhase:      factoryv1alpha1.SessionPhaseFailed,
+			wantRequeue:    false,
+			wantEventTypes: []events.EventType{events.EventSessionFailed},
 		},
 		{
 			name: "completed session is a no-op",
@@ -356,7 +379,8 @@ func TestSessionReconcile(t *testing.T) {
 				objs = append(objs, tt.pod)
 			}
 
-			r := newSessionReconciler(objs, tt.bridgeClient)
+			ep := &fakeEventPublisher{}
+			r := newSessionReconciler(objs, tt.bridgeClient, ep)
 
 			reqName := "test-session"
 			if tt.session != nil {
@@ -400,6 +424,23 @@ func TestSessionReconcile(t *testing.T) {
 
 			if tt.checkBridge != nil {
 				tt.checkBridge(t, tt.bridgeClient)
+			}
+
+			// Verify published events.
+			if len(tt.wantEventTypes) != len(ep.events) {
+				t.Errorf("expected %d events, got %d", len(tt.wantEventTypes), len(ep.events))
+			} else {
+				for i, wantType := range tt.wantEventTypes {
+					if ep.events[i].Type != wantType {
+						t.Errorf("event[%d] type = %q, want %q", i, ep.events[i].Type, wantType)
+					}
+					if ep.events[i].ID == "" {
+						t.Errorf("event[%d] ID should not be empty", i)
+					}
+					if ep.events[i].SessionID == "" {
+						t.Errorf("event[%d] SessionID should not be empty", i)
+					}
+				}
 			}
 		})
 	}
