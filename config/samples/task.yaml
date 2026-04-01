@@ -1,0 +1,18 @@
+apiVersion: factory.example.com/v1alpha1
+kind: Task
+metadata:
+  name: hello-world
+spec:
+  poolRef:
+    name: coding-pool
+
+  prompt: |
+    Create a Go program in /workspace/output/ that prints "Hello from the
+    Software Factory!" and includes a unit test. Make sure the test passes.
+
+  outputs:
+    - path: /workspace/output/
+      artifact: hello-app
+
+  timeout: 10m
+  retries: 1
