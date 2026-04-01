@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
+	"github.com/alexbrand/software-factory/internal/controller"
 )
 
 var (
@@ -36,8 +37,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: Register controllers here as they are implemented.
-	// See spec/04-control-plane.md for controller behaviors.
+	if err := (&controller.PoolReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Pool")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

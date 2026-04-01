@@ -1,0 +1,36 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: controller-manager-role
+rules:
+- apiGroups:
+  - factory.example.com
+  resources:
+  - pools
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - factory.example.com
+  resources:
+  - pools/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - factory.example.com
+  resources:
+  - sandboxes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

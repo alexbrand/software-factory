@@ -1,2 +1,1 @@
-Task 2: CRD Type Definitions — complete
-All types defined in api/v1alpha1/ and verified with go build, go vet, go test.
+Task 3: Pool Controller - completed
