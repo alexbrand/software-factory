@@ -10,6 +10,8 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
 	"github.com/alexbrand/software-factory/internal/apiserver"
@@ -39,11 +41,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	k8sClient, err := ctrl.NewManager(config, ctrl.Options{
-		Scheme: scheme,
-	})
+	// The apiserver only needs a cached client to read CRs — no controllers,
+	// so we create a cache and client directly instead of a full manager.
+	informerCache, err := cache.New(config, cache.Options{Scheme: scheme})
 	if err != nil {
-		logger.Error("creating manager", "error", err)
+		logger.Error("creating cache", "error", err)
+		os.Exit(1)
+	}
+
+	k8sClient, err := client.New(config, client.Options{Scheme: scheme, Cache: &client.CacheOptions{Reader: informerCache}})
+	if err != nil {
+		logger.Error("creating client", "error", err)
 		os.Exit(1)
 	}
 
@@ -61,21 +69,24 @@ func main() {
 		subscriber = newNATSSubscriber(events.NewSubscriber(js))
 	}
 
-	// Start the manager cache in the background.
+	// Set up signal handling.
+	ctx := ctrl.SetupSignalHandler()
+
+	// Start the informer cache in the background.
 	go func() {
-		if startErr := k8sClient.Start(ctrl.SetupSignalHandler()); startErr != nil {
-			logger.Error("manager failed", "error", startErr)
+		if startErr := informerCache.Start(ctx); startErr != nil {
+			logger.Error("cache failed", "error", startErr)
 			os.Exit(1)
 		}
 	}()
 
 	// Wait for cache to sync.
-	if !k8sClient.GetCache().WaitForCacheSync(ctrl.SetupSignalHandler()) {
+	if !informerCache.WaitForCacheSync(ctx) {
 		logger.Error("cache sync failed")
 		os.Exit(1)
 	}
 
-	handlers := apiserver.NewHandlers(k8sClient.GetClient(), subscriber, logger, namespace)
+	handlers := apiserver.NewHandlers(k8sClient, subscriber, logger, namespace)
 	srv := apiserver.NewServer(handlers, addr, logger)
 
 	logger.Info("starting apiserver", "addr", addr, "namespace", namespace)

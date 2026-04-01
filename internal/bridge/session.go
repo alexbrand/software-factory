@@ -64,14 +64,7 @@ func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfi
 		return "", fmt.Errorf("creating ACP session: %w", err)
 	}
 
-	// Send the task prompt.
-	if err := m.sdk.SendACPMessage(ctx, serverID, cfg.Prompt); err != nil {
-		// Try to clean up on failure.
-		_ = m.sdk.CloseACPSession(ctx, serverID)
-		return "", fmt.Errorf("sending prompt: %w", err)
-	}
-
-	// Start event forwarding in background.
+	// Start event forwarding before sending the prompt so we capture all events.
 	eventCtx, cancel := context.WithCancel(context.Background())
 
 	m.mu.Lock()
@@ -83,6 +76,16 @@ func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfi
 	m.mu.Unlock()
 
 	go m.streamEvents(eventCtx, serverID, onEvent)
+
+	// Send the prompt in a goroutine. The ACP session/prompt RPC blocks until
+	// the agent finishes, which can take minutes. We return immediately so the
+	// bridge HTTP handler doesn't time out. Prompt errors are logged and will
+	// surface as a session timeout to the task controller.
+	go func() {
+		if err := m.sdk.SendACPMessage(context.Background(), serverID, cfg.Prompt); err != nil {
+			m.logger.Error("failed to send prompt", "serverID", serverID, "error", err)
+		}
+	}()
 
 	return serverID, nil
 }

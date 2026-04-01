@@ -29,6 +29,7 @@ type TaskReconciler struct {
 // +kubebuilder:rbac:groups=factory.example.com,resources=sandboxes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=factory.example.com,resources=sandboxes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=factory.example.com,resources=sessions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=factory.example.com,resources=agentconfigs,verbs=get;list;watch
 
 func (r *TaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -158,6 +159,12 @@ func (r *TaskReconciler) ensureSession(ctx context.Context, task *factoryv1alpha
 		return ctrl.Result{RequeueAfter: defaultRequeueDelay}, nil
 	}
 
+	// Resolve agent type from the sandbox's AgentConfig.
+	agentType, err := r.resolveAgentType(ctx, task.Namespace, task.Status.SandboxRef.Name)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving agent type: %w", err)
+	}
+
 	sessionName := fmt.Sprintf("%s-session-%d", task.Name, task.Status.Attempts)
 	session := &factoryv1alpha1.Session{
 		ObjectMeta: metav1.ObjectMeta{
@@ -170,7 +177,7 @@ func (r *TaskReconciler) ensureSession(ctx context.Context, task *factoryv1alpha
 		Spec: factoryv1alpha1.SessionSpec{
 			SandboxRef: factoryv1alpha1.LocalObjectReference{Name: task.Status.SandboxRef.Name},
 			TaskRef:    &factoryv1alpha1.LocalObjectReference{Name: task.Name},
-			AgentType:  "default",
+			AgentType:  agentType,
 			Prompt:     task.Spec.Prompt,
 		},
 	}
@@ -334,4 +341,19 @@ func (r *TaskReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&factoryv1alpha1.Task{}).
 		Owns(&factoryv1alpha1.Session{}).
 		Complete(r)
+}
+
+// resolveAgentType looks up the agent type from the sandbox's AgentConfig.
+func (r *TaskReconciler) resolveAgentType(ctx context.Context, namespace, sandboxName string) (string, error) {
+	sandbox := &factoryv1alpha1.Sandbox{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sandboxName}, sandbox); err != nil {
+		return "", fmt.Errorf("getting sandbox: %w", err)
+	}
+
+	agentConfig := &factoryv1alpha1.AgentConfig{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sandbox.Spec.AgentConfigRef.Name}, agentConfig); err != nil {
+		return "", fmt.Errorf("getting agent config: %w", err)
+	}
+
+	return agentConfig.Spec.AgentType, nil
 }

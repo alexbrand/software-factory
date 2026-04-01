@@ -89,24 +89,24 @@ func mapEventType(sseEventType string) events.EventType {
 	// Normalize to lowercase for matching.
 	normalized := strings.ToLower(sseEventType)
 
-	switch {
-	case normalized == "session.started" || normalized == "session_started":
+	switch normalized {
+	case "session.started", "session_started":
 		return events.EventSessionStarted
-	case normalized == "session.completed" || normalized == "session_completed":
+	case "session.completed", "session_completed":
 		return events.EventSessionCompleted
-	case normalized == "session.failed" || normalized == "session_failed":
+	case "session.failed", "session_failed":
 		return events.EventSessionFailed
-	case normalized == "thinking" || normalized == "agent.thinking":
+	case "thinking", "agent.thinking":
 		return events.EventAgentThinking
-	case normalized == "message" || normalized == "agent.message":
+	case "message", "agent.message":
 		return events.EventAgentMessage
-	case normalized == "tool.call" || normalized == "tool_call":
+	case "tool.call", "tool_call":
 		return events.EventToolCall
-	case normalized == "tool.result" || normalized == "tool_result":
+	case "tool.result", "tool_result":
 		return events.EventToolResult
-	case normalized == "token.usage" || normalized == "token_usage":
+	case "token.usage", "token_usage":
 		return events.EventTokenUsage
-	case normalized == "error":
+	case "error":
 		return events.EventError
 	default:
 		return ""

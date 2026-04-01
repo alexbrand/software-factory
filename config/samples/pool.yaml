@@ -10,7 +10,7 @@ spec:
     min: 1
     max: 3
     idleTimeout: 10m
-    scaleUpThreshold: 0.8
+    scaleUpThreshold: "0.8"
 
   sandboxTemplate:
     resources:

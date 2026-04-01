@@ -97,12 +97,8 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		ContextFiles: ctxFiles,
 	}
 
-	var onEvent func(SSEEvent)
-	if s.eventForwarder != nil {
-		// We don't know the session ID yet, so we create a closure that captures it.
-		// The session ID comes from the SDK response.
-		onEvent = func(event SSEEvent) {}
-	}
+	onEvent := func(SSEEvent) {}
+	_ = s.eventForwarder // TODO: wire up event forwarding with actual session ID
 
 	sessionID, err := s.sessionManager.StartSession(r.Context(), cfg, onEvent)
 	if err != nil {

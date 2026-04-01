@@ -10,21 +10,6 @@ import (
 	"github.com/alexbrand/software-factory/pkg/events"
 )
 
-// mockJetStream implements events.JetStreamPublisher for testing.
-type mockJetStream struct {
-	published []publishedMsg
-}
-
-type publishedMsg struct {
-	Subject string
-	Data    []byte
-}
-
-func (m *mockJetStream) Publish(subj string, data []byte, _ ...interface{}) (interface{}, error) {
-	m.published = append(m.published, publishedMsg{Subject: subj, Data: data})
-	return nil, nil
-}
-
 func TestMapEventType(t *testing.T) {
 	tests := []struct {
 		input    string

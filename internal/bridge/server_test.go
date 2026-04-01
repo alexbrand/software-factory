@@ -7,43 +7,31 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
-func newTestServer(t *testing.T) (*Server, *httptest.Server) {
+func newTestServer(t *testing.T) *Server {
 	t.Helper()
 
-	sdkServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/fs/file":
-			w.WriteHeader(http.StatusCreated)
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/acp":
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(ACPSessionResponse{ServerID: "test-session"})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/acp/test-session":
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/acp/test-session":
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodDelete && r.URL.Path == "/v1/acp/test-session":
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
+	mock := newACPTestServer()
+	sdkServer := httptest.NewServer(mock.handler())
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	sdk := NewSDKClientWithHTTP(sdkServer.URL, sdkServer.Client())
 	sm := NewSessionManager(sdk, logger)
 	srv := NewServer(sm, nil, logger)
 
-	t.Cleanup(func() { sdkServer.Close() })
+	t.Cleanup(func() {
+		close(mock.sseDone)
+		sdkServer.Close()
+	})
 
-	return srv, sdkServer
+	return srv
 }
 
 func TestServerHealthz(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	w := httptest.NewRecorder()
@@ -66,7 +54,7 @@ func TestServerHealthz(t *testing.T) {
 }
 
 func TestServerHealthzUnhealthy(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 	srv.SetSDKHealthy(false)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -81,7 +69,7 @@ func TestServerHealthzUnhealthy(t *testing.T) {
 }
 
 func TestServerStartSession(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 
 	body, _ := json.Marshal(SessionConfig{
 		AgentType: "claude-code",
@@ -101,13 +89,13 @@ func TestServerStartSession(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
-	if resp.SessionID != "test-session" {
-		t.Errorf("expected session ID 'test-session', got %s", resp.SessionID)
+	if !strings.HasPrefix(resp.SessionID, "bridge-") {
+		t.Errorf("expected session ID starting with bridge-, got %s", resp.SessionID)
 	}
 }
 
 func TestServerStartSessionMissingFields(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 
 	tests := []struct {
 		name string
@@ -133,7 +121,7 @@ func TestServerStartSessionMissingFields(t *testing.T) {
 }
 
 func TestServerSendMessage(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 
 	// First start a session.
 	body, _ := json.Marshal(SessionConfig{
@@ -149,11 +137,15 @@ func TestServerSendMessage(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
+	var resp SessionResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	sessionID := resp.SessionID
+
 	// Send a message.
 	msgBody, _ := json.Marshal(map[string]string{"message": "follow-up"})
-	req = httptest.NewRequest(http.MethodPost, "/sessions/test-session/messages", bytes.NewReader(msgBody))
+	req = httptest.NewRequest(http.MethodPost, "/sessions/"+sessionID+"/messages", bytes.NewReader(msgBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.SetPathValue("id", "test-session")
+	req.SetPathValue("id", sessionID)
 	w = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -163,7 +155,7 @@ func TestServerSendMessage(t *testing.T) {
 }
 
 func TestServerSendMessageMissingBody(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 
 	// Start a session first.
 	body, _ := json.Marshal(SessionConfig{AgentType: "claude-code", Prompt: "hello"})
@@ -172,11 +164,14 @@ func TestServerSendMessageMissingBody(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
+	var resp SessionResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+
 	// Send empty message.
 	msgBody, _ := json.Marshal(map[string]string{"message": ""})
-	req = httptest.NewRequest(http.MethodPost, "/sessions/test-session/messages", bytes.NewReader(msgBody))
+	req = httptest.NewRequest(http.MethodPost, "/sessions/"+resp.SessionID+"/messages", bytes.NewReader(msgBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.SetPathValue("id", "test-session")
+	req.SetPathValue("id", resp.SessionID)
 	w = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -186,7 +181,7 @@ func TestServerSendMessageMissingBody(t *testing.T) {
 }
 
 func TestServerCancelSession(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 
 	// Start a session.
 	body, _ := json.Marshal(SessionConfig{AgentType: "claude-code", Prompt: "hello"})
@@ -199,9 +194,12 @@ func TestServerCancelSession(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
+	var resp SessionResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+
 	// Cancel the session.
-	req = httptest.NewRequest(http.MethodDelete, "/sessions/test-session", nil)
-	req.SetPathValue("id", "test-session")
+	req = httptest.NewRequest(http.MethodDelete, "/sessions/"+resp.SessionID, nil)
+	req.SetPathValue("id", resp.SessionID)
 	w = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -211,7 +209,7 @@ func TestServerCancelSession(t *testing.T) {
 }
 
 func TestServerSendMessageNotFound(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 
 	msgBody, _ := json.Marshal(map[string]string{"message": "hello"})
 	req := httptest.NewRequest(http.MethodPost, "/sessions/nonexistent/messages", bytes.NewReader(msgBody))

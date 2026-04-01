@@ -515,8 +515,9 @@ func (r *SandboxReconciler) buildPod(sandbox *factoryv1alpha1.Sandbox, pool *fac
 	// Init container for workspace initialization
 	initContainers := []corev1.Container{
 		{
-			Name:  "workspace-init",
-			Image: agentConfig.Spec.SDK.Image,
+			Name:            "workspace-init",
+			Image:           agentConfig.Spec.SDK.Image,
+			ImagePullPolicy: corev1.PullIfNotPresent,
 			Command: []string{
 				"sh", "-c", "echo 'Workspace initialized'",
 			},
@@ -544,11 +545,12 @@ func (r *SandboxReconciler) buildPod(sandbox *factoryv1alpha1.Sandbox, pool *fac
 
 	// SDK container
 	sdkContainer := corev1.Container{
-		Name:         "sandbox-agent-sdk",
-		Image:        agentConfig.Spec.SDK.Image,
-		Ports:        []corev1.ContainerPort{{ContainerPort: sdkPort, Name: "sdk", Protocol: corev1.ProtocolTCP}},
-		VolumeMounts: sdkVolumeMounts,
-		Resources:    resources,
+		Name:            "sandbox-agent-sdk",
+		Image:           agentConfig.Spec.SDK.Image,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Ports:           []corev1.ContainerPort{{ContainerPort: sdkPort, Name: "sdk", Protocol: corev1.ProtocolTCP}},
+		VolumeMounts:    sdkVolumeMounts,
+		Resources:       resources,
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				TCPSocket: &corev1.TCPSocketAction{
@@ -562,10 +564,11 @@ func (r *SandboxReconciler) buildPod(sandbox *factoryv1alpha1.Sandbox, pool *fac
 
 	// Bridge sidecar container
 	bridgeContainer := corev1.Container{
-		Name:         "bridge",
-		Image:        agentConfig.Spec.Bridge.Image,
-		Ports:        []corev1.ContainerPort{{ContainerPort: bridgePort, Name: "bridge", Protocol: corev1.ProtocolTCP}},
-		VolumeMounts: bridgeVolumeMounts,
+		Name:            "bridge",
+		Image:           agentConfig.Spec.Bridge.Image,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Ports:           []corev1.ContainerPort{{ContainerPort: bridgePort, Name: "bridge", Protocol: corev1.ProtocolTCP}},
+		VolumeMounts:    bridgeVolumeMounts,
 		Env: []corev1.EnvVar{
 			{Name: "SDK_HOST", Value: "localhost"},
 			{Name: "SDK_PORT", Value: fmt.Sprintf("%d", sdkPort)},

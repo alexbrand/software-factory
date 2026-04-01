@@ -135,7 +135,7 @@ spec:
 
   # Sandbox Agent SDK configuration
   sdk:
-    image: ghcr.io/rivet-dev/sandbox-agent:v0.4.2
+    image: rivetdev/sandbox-agent:0.4.2-full
     port: 2468
 
   # Bridge sidecar configuration

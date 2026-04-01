@@ -62,8 +62,13 @@ func (r *StatusReporter) Run(ctx context.Context) {
 }
 
 func (r *StatusReporter) check(ctx context.Context) {
+	// Use an independent context for health checks so they are not constrained
+	// by the parent context deadline (which controls the Run loop lifetime).
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
 	// Check SDK health.
-	_, err := r.sdk.GetHealth(ctx)
+	_, err := r.sdk.GetHealth(checkCtx)
 	healthy := err == nil
 
 	if r.onSDKHealthy != nil {

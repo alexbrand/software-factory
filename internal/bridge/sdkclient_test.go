@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -25,24 +26,42 @@ func TestNewSDKClientTrimsTrailingSlash(t *testing.T) {
 }
 
 func TestCreateACPSession(t *testing.T) {
+	var callCount int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
-		if r.URL.Path != "/v1/acp" {
-			t.Errorf("expected /v1/acp, got %s", r.URL.Path)
+		if !strings.HasPrefix(r.URL.Path, "/v1/acp/bridge-") {
+			t.Errorf("expected /v1/acp/bridge-*, got %s", r.URL.Path)
 		}
 
-		var cfg ACPConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		var rpcReq jsonRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&rpcReq); err != nil {
 			t.Fatalf("decoding request body: %v", err)
 		}
-		if cfg.Agent != "claude-code" {
-			t.Errorf("expected agent claude-code, got %s", cfg.Agent)
-		}
 
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(ACPSessionResponse{ServerID: "srv-123"})
+		callCount++
+		switch rpcReq.Method {
+		case "initialize":
+			if r.URL.Query().Get("agent") != "claude-code" {
+				t.Errorf("expected agent=claude-code query param, got %s", r.URL.Query().Get("agent"))
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      rpcReq.ID,
+				Result:  json.RawMessage(`{"protocolVersion":1}`),
+			})
+		case "session/new":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      rpcReq.ID,
+				Result:  json.RawMessage(`{"sessionId":"sess-abc"}`),
+			})
+		default:
+			t.Errorf("unexpected method: %s", rpcReq.Method)
+		}
 	}))
 	defer server.Close()
 
@@ -51,8 +70,15 @@ func TestCreateACPSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if id != "srv-123" {
-		t.Errorf("expected srv-123, got %s", id)
+	if !strings.HasPrefix(id, "bridge-") {
+		t.Errorf("expected server ID starting with bridge-, got %s", id)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 RPC calls (initialize + session/new), got %d", callCount)
+	}
+	// Verify session ID was stored.
+	if client.getSessionID(id) != "sess-abc" {
+		t.Errorf("expected stored session ID sess-abc, got %s", client.getSessionID(id))
 	}
 }
 
@@ -79,18 +105,25 @@ func TestSendACPMessage(t *testing.T) {
 			t.Errorf("expected /v1/acp/srv-123, got %s", r.URL.Path)
 		}
 
-		var msg ACPMessage
-		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		var rpcReq jsonRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&rpcReq); err != nil {
 			t.Fatalf("decoding request body: %v", err)
 		}
-		if msg.Message != "hello" {
-			t.Errorf("expected message 'hello', got %s", msg.Message)
+		if rpcReq.Method != "session/prompt" {
+			t.Errorf("expected method session/prompt, got %s", rpcReq.Method)
 		}
+
 		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      rpcReq.ID,
+			Result:  json.RawMessage(`{"stopReason":"end_turn"}`),
+		})
 	}))
 	defer server.Close()
 
 	client := NewSDKClientWithHTTP(server.URL, server.Client())
+	client.setSessionID("srv-123", "sess-abc")
 	err := client.SendACPMessage(context.Background(), "srv-123", "hello")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -177,9 +210,9 @@ func TestStreamACPEvents(t *testing.T) {
 		if !ok {
 			t.Fatal("expected flusher")
 		}
-		fmt.Fprint(w, "event: message\ndata: {\"text\":\"hello\"}\nid: ev-1\n\n")
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"text\":\"hello\"}\nid: ev-1\n\n")
 		flusher.Flush()
-		fmt.Fprint(w, "event: session.completed\ndata: {}\n\n")
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"method\":\"session/update\"}\nid: ev-2\n\n")
 		flusher.Flush()
 	}))
 	defer server.Close()
@@ -203,9 +236,6 @@ func TestStreamACPEvents(t *testing.T) {
 	}
 	if received[0].ID != "ev-1" {
 		t.Errorf("expected ID 'ev-1', got %s", received[0].ID)
-	}
-	if received[1].Event != "session.completed" {
-		t.Errorf("expected event 'session.completed', got %s", received[1].Event)
 	}
 }
 
@@ -241,6 +271,13 @@ func TestParseSSEStream(t *testing.T) {
 			input: ": this is a comment\nevent: test\ndata: value\n\n",
 			expected: []SSEEvent{
 				{Event: "test", Data: "value"},
+			},
+		},
+		{
+			name:  "heartbeat comments ignored",
+			input: ": heartbeat\nevent: msg\ndata: hi\n\n",
+			expected: []SSEEvent{
+				{Event: "msg", Data: "hi"},
 			},
 		},
 		{

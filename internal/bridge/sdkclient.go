@@ -9,15 +9,21 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 const defaultSDKTimeout = 30 * time.Second
 
-// SDKClient is an HTTP client for the Sandbox Agent SDK API.
+// SDKClient is an HTTP client for the Sandbox Agent SDK's ACP protocol.
+// It communicates using JSON-RPC 2.0 over HTTP, following the ACP spec:
+//   - POST /v1/acp/{server_id}?agent=<agent>  — initialize + session/new + session/prompt
+//   - GET  /v1/acp/{server_id}                 — SSE event stream
+//   - DELETE /v1/acp/{server_id}               — close connection
 type SDKClient struct {
 	httpClient *http.Client
 	baseURL    string
+	nextID     atomic.Int64
 }
 
 // NewSDKClient creates a new SDK client pointing at the given base URL.
@@ -43,8 +49,11 @@ type ACPConfig struct {
 }
 
 // ACPSessionResponse is the response from creating an ACP session.
+// ServerID is the ACP connection ID (chosen by the bridge).
+// SessionID is the agent-assigned session ID from session/new.
 type ACPSessionResponse struct {
-	ServerID string `json:"serverId"`
+	ServerID  string `json:"serverId"`
+	SessionID string `json:"sessionId"`
 }
 
 // ACPMessage is a message to send to an ACP session.
@@ -70,61 +79,163 @@ type SSEEvent struct {
 	ID    string
 }
 
-// CreateACPSession creates a new ACP session on the SDK.
-func (c *SDKClient) CreateACPSession(ctx context.Context, cfg ACPConfig) (string, error) {
-	body, err := json.Marshal(cfg)
-	if err != nil {
-		return "", fmt.Errorf("marshaling ACP config: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/acp", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("creating ACP session request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("creating ACP session: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("creating ACP session: unexpected status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result ACPSessionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decoding ACP session response: %w", err)
-	}
-
-	return result.ServerID, nil
+// jsonRPCRequest is a JSON-RPC 2.0 request.
+type jsonRPCRequest struct {
+	JSONRPC string      `json:"jsonrpc"`
+	ID      int64       `json:"id"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params"`
 }
 
-// SendACPMessage sends a message to an active ACP session.
-func (c *SDKClient) SendACPMessage(ctx context.Context, serverID string, msg string) error {
-	payload := ACPMessage{Message: msg}
-	body, err := json.Marshal(payload)
+// jsonRPCResponse is a JSON-RPC 2.0 response.
+type jsonRPCResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int64           `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *jsonRPCError   `json:"error,omitempty"`
+}
+
+// jsonRPCError is a JSON-RPC 2.0 error.
+type jsonRPCError struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+func (e *jsonRPCError) Error() string {
+	return fmt.Sprintf("JSON-RPC error %d: %s", e.Code, e.Message)
+}
+
+// sendRPC sends a JSON-RPC request and returns the parsed response.
+func (c *SDKClient) sendRPC(ctx context.Context, url string, rpcReq jsonRPCRequest) (*jsonRPCResponse, error) {
+	body, err := json.Marshal(rpcReq)
 	if err != nil {
-		return fmt.Errorf("marshaling ACP message: %w", err)
+		return nil, fmt.Errorf("marshaling JSON-RPC request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/acp/%s", c.baseURL, serverID), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("creating send ACP message request: %w", err)
+		return nil, fmt.Errorf("creating JSON-RPC request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("sending ACP message: %w", err)
+		return nil, fmt.Errorf("sending JSON-RPC request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("sending ACP message: unexpected status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var rpcResp jsonRPCResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		return nil, fmt.Errorf("decoding JSON-RPC response: %w", err)
+	}
+
+	if rpcResp.Error != nil {
+		return nil, rpcResp.Error
+	}
+
+	return &rpcResp, nil
+}
+
+// CreateACPSession initializes an ACP connection and creates a new agent session.
+// It performs the two-step ACP handshake: initialize → session/new.
+// Returns the server ID (ACP connection ID) used for subsequent requests.
+func (c *SDKClient) CreateACPSession(ctx context.Context, cfg ACPConfig) (string, error) {
+	serverID := fmt.Sprintf("bridge-%d", time.Now().UnixNano())
+	acpURL := fmt.Sprintf("%s/v1/acp/%s", c.baseURL, serverID)
+
+	// Step 1: Initialize the ACP connection.
+	initResp, err := c.sendRPC(ctx, acpURL+"?agent="+cfg.Agent, jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      c.nextID.Add(1),
+		Method:  "initialize",
+		Params: map[string]interface{}{
+			"protocolVersion": 1,
+			"capabilities":   map[string]interface{}{},
+			"clientInfo": map[string]string{
+				"name":    "software-factory-bridge",
+				"version": "1.0.0",
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("ACP initialize: %w", err)
+	}
+	_ = initResp
+
+	// Step 2: Create a new session.
+	cwd := cfg.WorkDir
+	if cwd == "" {
+		cwd = "/workspace"
+	}
+	sessionParams := map[string]interface{}{
+		"mcpServers": []interface{}{},
+		"cwd":        cwd,
+	}
+
+	newResp, err := c.sendRPC(ctx, acpURL, jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      c.nextID.Add(1),
+		Method:  "session/new",
+		Params:  sessionParams,
+	})
+	if err != nil {
+		return "", fmt.Errorf("ACP session/new: %w", err)
+	}
+
+	// Extract the agent-assigned session ID.
+	var sessionResult struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(newResp.Result, &sessionResult); err != nil {
+		return "", fmt.Errorf("decoding session/new result: %w", err)
+	}
+
+	// Return serverID — the session manager uses this to send prompts and stream events.
+	// Store the ACP session ID for use in session/prompt calls.
+	// We encode both IDs by returning serverID and storing the mapping.
+	c.setSessionID(serverID, sessionResult.SessionID)
+
+	return serverID, nil
+}
+
+// sessionIDs maps server IDs to ACP session IDs. This is a simple in-process
+// mapping since each bridge sidecar runs a small number of concurrent sessions.
+var sessionIDMap = struct {
+	m map[string]string
+}{m: make(map[string]string)}
+
+func (c *SDKClient) setSessionID(serverID, sessionID string) {
+	sessionIDMap.m[serverID] = sessionID
+}
+
+func (c *SDKClient) getSessionID(serverID string) string {
+	return sessionIDMap.m[serverID]
+}
+
+// SendACPMessage sends a prompt to an active ACP session using the session/prompt method.
+func (c *SDKClient) SendACPMessage(ctx context.Context, serverID string, msg string) error {
+	acpURL := fmt.Sprintf("%s/v1/acp/%s", c.baseURL, serverID)
+	sessionID := c.getSessionID(serverID)
+
+	_, err := c.sendRPC(ctx, acpURL, jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      c.nextID.Add(1),
+		Method:  "session/prompt",
+		Params: map[string]interface{}{
+			"sessionId": sessionID,
+			"prompt": []map[string]string{
+				{"type": "text", "text": msg},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("ACP session/prompt: %w", err)
 	}
 
 	return nil
@@ -185,6 +296,11 @@ func parseSSEStream(ctx context.Context, r io.Reader, ch chan<- SSEEvent) {
 			continue
 		}
 
+		if strings.HasPrefix(line, ":") {
+			// Comment line (heartbeat), ignore.
+			continue
+		}
+
 		if strings.HasPrefix(line, "event:") {
 			current.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		} else if strings.HasPrefix(line, "data:") {
@@ -195,7 +311,6 @@ func parseSSEStream(ctx context.Context, r io.Reader, ch chan<- SSEEvent) {
 		} else if strings.HasPrefix(line, "id:") {
 			current.ID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
 		}
-		// Lines starting with ':' are comments, ignored.
 	}
 
 	// Emit any remaining event.
@@ -204,7 +319,7 @@ func parseSSEStream(ctx context.Context, r io.Reader, ch chan<- SSEEvent) {
 	}
 }
 
-// CloseACPSession closes an ACP session.
+// CloseACPSession closes an ACP connection.
 func (c *SDKClient) CloseACPSession(ctx context.Context, serverID string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, fmt.Sprintf("%s/v1/acp/%s", c.baseURL, serverID), nil)
 	if err != nil {
@@ -221,6 +336,9 @@ func (c *SDKClient) CloseACPSession(ctx context.Context, serverID string) error 
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("closing ACP session: unexpected status %d: %s", resp.StatusCode, string(respBody))
 	}
+
+	// Clean up session ID mapping.
+	delete(sessionIDMap.m, serverID)
 
 	return nil
 }
