@@ -72,6 +72,28 @@ run_task() {
         echo ""
         echo "✓ COMPLETED: $task_name after $iter iteration(s)"
         rm .milestone-complete
+
+        # Push changes to GitHub with retry
+        local branch
+        branch="$(git branch --show-current)"
+        local attempt=0
+        local max_push_retries=4
+        local backoff=2
+        while [ $attempt -lt $max_push_retries ]; do
+            if git push -u origin "$branch" 2>&1; then
+                echo "✓ Pushed changes for $task_name"
+                break
+            fi
+            attempt=$((attempt + 1))
+            if [ $attempt -lt $max_push_retries ]; then
+                echo "  Push failed, retrying in ${backoff}s..."
+                sleep $backoff
+                backoff=$((backoff * 2))
+            else
+                echo "  ✗ Push failed after $max_push_retries attempts. Continuing anyway."
+            fi
+        done
+
         return 0
     else
         echo ""
