@@ -1,9 +1,1 @@
-Task 7: NATS Event Bus Integration - Complete
-
-Implemented:
-- pkg/events/types.go: Event schema with all event types from spec
-- pkg/events/publisher.go: JetStream publisher with EnsureStream
-- pkg/events/subscriber.go: JetStream subscriber with session and queue group support
-- pkg/events/nats.go: NATS connection helper with retry logic
-- Updated Session Controller to publish session lifecycle events
-- Full test coverage using mock/interface-based NATS interactions
+Task 8: API Server - Complete

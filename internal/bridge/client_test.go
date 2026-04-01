@@ -32,7 +32,7 @@ func TestStartSession(t *testing.T) {
 					t.Errorf("expected prompt 'test prompt', got %q", cfg.Prompt)
 				}
 				w.WriteHeader(http.StatusCreated)
-				json.NewEncoder(w).Encode(SessionResponse{SessionID: "sess-123"})
+				_ = json.NewEncoder(w).Encode(SessionResponse{SessionID: "sess-123"})
 			},
 			wantID: "sess-123",
 		},
@@ -40,7 +40,7 @@ func TestStartSession(t *testing.T) {
 			name: "server error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte("internal error"))
+				_, _ = w.Write([]byte("internal error"))
 			},
 			wantErr: true,
 		},
@@ -89,7 +89,7 @@ func TestSendMessage(t *testing.T) {
 			name: "not found",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
-				w.Write([]byte("session not found"))
+				_, _ = w.Write([]byte("session not found"))
 			},
 			wantErr: true,
 		},
@@ -132,7 +132,7 @@ func TestCancelSession(t *testing.T) {
 			name: "server error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte("error"))
+				_, _ = w.Write([]byte("error"))
 			},
 			wantErr: true,
 		},
@@ -169,7 +169,7 @@ func TestGetHealth(t *testing.T) {
 				if r.URL.Path != "/healthz" {
 					t.Errorf("expected /healthz, got %s", r.URL.Path)
 				}
-				json.NewEncoder(w).Encode(HealthStatus{
+				_ = json.NewEncoder(w).Encode(HealthStatus{
 					Status:         "healthy",
 					ActiveSessions: 1,
 					Uptime:         3600,

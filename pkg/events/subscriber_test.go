@@ -10,20 +10,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// mockSubscription implements a minimal nats.Subscription-like behavior for testing.
-type mockMsg struct {
-	data []byte
-	acked bool
-	mu    sync.Mutex
-}
-
-func (m *mockMsg) Ack(_ ...nats.AckOpt) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.acked = true
-	return nil
-}
-
 // mockJetStreamSubscriber implements JetStreamSubscriber for testing.
 type mockJetStreamSubscriber struct {
 	subscribeCallback func(subj string, cb nats.MsgHandler)

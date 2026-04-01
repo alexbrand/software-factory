@@ -38,6 +38,9 @@ rules:
   resources:
   - pools/status
   - sandboxes/status
+  - sessions/status
+  - tasks/status
+  - workflows/status
   verbs:
   - get
   - patch
@@ -46,6 +49,9 @@ rules:
   - factory.example.com
   resources:
   - sandboxes
+  - sessions
+  - tasks
+  - workflows
   verbs:
   - create
   - delete

@@ -81,7 +81,7 @@ func (c *Client) StartSession(ctx context.Context, cfg SessionConfig) (string, e
 	if err != nil {
 		return "", fmt.Errorf("starting session: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -117,7 +117,7 @@ func (c *Client) SendMessage(ctx context.Context, sessionID string, msg string) 
 	if err != nil {
 		return fmt.Errorf("sending message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -138,7 +138,7 @@ func (c *Client) CancelSession(ctx context.Context, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("cancelling session: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -159,7 +159,7 @@ func (c *Client) GetHealth(ctx context.Context) (*HealthStatus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("checking health: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)

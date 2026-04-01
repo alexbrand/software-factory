@@ -4,7 +4,7 @@
 
 # Tool versions
 CONTROLLER_GEN_VERSION ?= v0.17.2
-GOLANGCI_LINT_VERSION ?= v1.64.5
+GOLANGCI_LINT_VERSION ?= v1.64.8
 
 # Binaries
 CONTROLLER_GEN ?= $(shell which controller-gen 2>/dev/null)
@@ -51,7 +51,7 @@ build: ## Build all binaries
 
 .PHONY: test
 test: ## Run unit tests
-	go test ./... -race -coverprofile=coverage.out
+	go test ./... -race
 
 .PHONY: test-verbose
 test-verbose: ## Run unit tests with verbose output
@@ -93,7 +93,7 @@ endif
 .PHONY: golangci-lint
 golangci-lint: ## Install golangci-lint if not present
 ifeq (,$(GOLANGCI_LINT))
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOBIN) $(GOLANGCI_LINT_VERSION)
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	$(eval GOLANGCI_LINT := $(GOBIN)/golangci-lint)
 endif
 
