@@ -61,7 +61,7 @@ run_task() {
 
         # Run claude in headless mode, append output to log
         claude -p "$(cat "$task_file")" \
-            --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
+            --dangerously-skip-permissions \
             2>&1 | tee -a "$log_file" || true
 
         # Brief pause between iterations
