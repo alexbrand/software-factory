@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller-manager
+  labels:
+    app.kubernetes.io/name: controller-manager
+    app.kubernetes.io/part-of: software-factory
+spec:
+  selector:
+    app.kubernetes.io/name: controller-manager
+  ports:
+    - port: 8081
+      targetPort: health
+      name: health
+      protocol: TCP

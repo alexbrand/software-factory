@@ -88,3 +88,139 @@ make lint         # Run golangci-lint
 make manifests    # Generate CRD YAML into config/crd/bases/
 make docker-build # Multi-stage Docker build
 ```
+
+## Deployment
+
+### Prerequisites
+
+- A Kubernetes cluster (v1.28+)
+- `kubectl` configured to talk to the cluster
+- [kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/) (or `kubectl` v1.14+ which includes it)
+- Container images pushed to a registry accessible from the cluster
+
+### 1. Build and push container images
+
+Build the three container images using the multi-stage Dockerfile:
+
+```bash
+make docker-build
+
+# Tag and push to your registry
+export REGISTRY=ghcr.io/your-org
+
+docker tag software-factory-controller-manager:latest $REGISTRY/factory-controller-manager:latest
+docker tag software-factory-apiserver:latest $REGISTRY/factory-apiserver:latest
+docker tag software-factory-bridge:latest $REGISTRY/factory-bridge:latest
+
+docker push $REGISTRY/factory-controller-manager:latest
+docker push $REGISTRY/factory-apiserver:latest
+docker push $REGISTRY/factory-bridge:latest
+```
+
+### 2. Deploy everything with kustomize
+
+The `config/default/` overlay deploys all components (CRDs, RBAC, controller manager, API server, NATS) into the `factory-system` namespace.
+
+Update the image references in [`config/default/kustomization.yaml`](config/default/kustomization.yaml) to point to your registry, then apply:
+
+```bash
+kubectl create namespace factory-system
+kubectl apply -k config/default/
+```
+
+This installs:
+
+| Component | Manifest directory | Description |
+|-----------|-------------------|-------------|
+| CRDs | [`config/crd/`](config/crd/) | All six CRDs under `factory.example.com/v1alpha1` |
+| RBAC | [`config/rbac/`](config/rbac/) | ClusterRole and ClusterRoleBinding for the controller manager |
+| Controller manager | [`config/manager/`](config/manager/) | Deployment, Service, and ServiceAccount |
+| API server | [`config/apiserver/`](config/apiserver/) | Deployment, Service, and ServiceAccount |
+| NATS JetStream | [`config/nats/`](config/nats/) | StatefulSet with persistent storage and headless Service |
+
+### Deploying individual components
+
+You can also deploy components individually:
+
+```bash
+# CRDs only
+kubectl apply -k config/crd/
+
+# RBAC only
+kubectl apply -k config/rbac/
+
+# Controller manager only
+kubectl apply -k config/manager/
+
+# NATS only
+kubectl apply -k config/nats/
+```
+
+### Verify the deployment
+
+```bash
+# Check that CRDs are installed
+kubectl get crds | grep factory.example.com
+
+# Check that all pods are running
+kubectl get pods -n factory-system
+
+# Verify the API resources are available
+kubectl api-resources | grep factory
+```
+
+## Quick Start
+
+This example walks through setting up a coding agent that performs a task in a sandbox. Sample manifests are in [`config/samples/`](config/samples/).
+
+### 1. Create a namespace and API key secret
+
+```bash
+kubectl create namespace demo
+
+# Store your Anthropic API key as a Kubernetes secret
+kubectl create secret generic anthropic-credentials \
+  --namespace demo \
+  --from-literal=api-key=$ANTHROPIC_API_KEY
+```
+
+### 2. Deploy the agent config, pool, and task
+
+Review the sample manifests to understand each resource:
+
+- [`config/samples/agentconfig.yaml`](config/samples/agentconfig.yaml) — configures a Claude Code agent with the Sandbox Agent SDK, bridge sidecar, and Anthropic API credentials
+- [`config/samples/pool.yaml`](config/samples/pool.yaml) — creates a warm pool of 1–3 sandboxes with CPU/memory limits and a network policy
+- [`config/samples/task.yaml`](config/samples/task.yaml) — submits a prompt that asks the agent to write and test a Go program
+
+Apply the agent config and pool first, then submit the task:
+
+```bash
+kubectl apply -f config/samples/agentconfig.yaml -f config/samples/pool.yaml -n demo
+kubectl apply -f config/samples/task.yaml -n demo
+```
+
+### 3. Watch the task
+
+```bash
+# Watch the task progress through its lifecycle
+kubectl get tasks -n demo -w
+
+# Check task status and details
+kubectl describe task hello-world -n demo
+```
+
+The task will transition through these phases: `Pending` → `Running` → `Succeeded`.
+
+### 4. Inspect results
+
+Once the task completes, you can inspect the sandbox that ran it:
+
+```bash
+# See which sandbox was assigned
+kubectl get task hello-world -n demo -o jsonpath='{.status.sandboxRef.name}'
+
+# View the task's token usage
+kubectl get task hello-world -n demo -o jsonpath='{.status.tokenUsage}'
+```
+
+For more examples, see the [`examples/`](examples/) directory, which includes a [coding agent with Kubernetes access](examples/coding-agent-with-k8s-access/) and a [personal assistant with MCP tools](examples/personal-assistant/).
