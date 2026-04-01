@@ -106,8 +106,13 @@ func (e *jsonRPCError) Error() string {
 	return fmt.Sprintf("JSON-RPC error %d: %s", e.Code, e.Message)
 }
 
-// sendRPC sends a JSON-RPC request and returns the parsed response.
+// sendRPC sends a JSON-RPC request using the default HTTP client.
 func (c *SDKClient) sendRPC(ctx context.Context, url string, rpcReq jsonRPCRequest) (*jsonRPCResponse, error) {
+	return c.sendRPCWith(ctx, c.httpClient, url, rpcReq)
+}
+
+// sendRPCWith sends a JSON-RPC request using the given HTTP client.
+func (c *SDKClient) sendRPCWith(ctx context.Context, httpClient *http.Client, url string, rpcReq jsonRPCRequest) (*jsonRPCResponse, error) {
 	body, err := json.Marshal(rpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling JSON-RPC request: %w", err)
@@ -119,7 +124,7 @@ func (c *SDKClient) sendRPC(ctx context.Context, url string, rpcReq jsonRPCReque
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("sending JSON-RPC request: %w", err)
 	}
@@ -196,10 +201,24 @@ func (c *SDKClient) CreateACPSession(ctx context.Context, cfg ACPConfig) (string
 		return "", fmt.Errorf("decoding session/new result: %w", err)
 	}
 
-	// Return serverID — the session manager uses this to send prompts and stream events.
-	// Store the ACP session ID for use in session/prompt calls.
-	// We encode both IDs by returning serverID and storing the mapping.
 	c.setSessionID(serverID, sessionResult.SessionID)
+
+	// Step 3: Set permission mode to bypass so tool calls don't block waiting
+	// for interactive approval (there is no human in the loop).
+	_, err = c.sendRPC(ctx, acpURL, jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      c.nextID.Add(1),
+		Method:  "session/set_config_option",
+		Params: map[string]interface{}{
+			"sessionId": sessionResult.SessionID,
+			"configId":  "mode",
+			"value":     "bypassPermissions",
+		},
+	})
+	if err != nil {
+		// Non-fatal — the session can still work, just with permission prompts.
+		_ = err
+	}
 
 	return serverID, nil
 }
@@ -219,11 +238,12 @@ func (c *SDKClient) getSessionID(serverID string) string {
 }
 
 // SendACPMessage sends a prompt to an active ACP session using the session/prompt method.
+// This uses a client without timeout because the agent may take minutes to process.
 func (c *SDKClient) SendACPMessage(ctx context.Context, serverID string, msg string) error {
 	acpURL := fmt.Sprintf("%s/v1/acp/%s", c.baseURL, serverID)
 	sessionID := c.getSessionID(serverID)
 
-	_, err := c.sendRPC(ctx, acpURL, jsonRPCRequest{
+	_, err := c.sendRPCWith(ctx, &http.Client{}, acpURL, jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      c.nextID.Add(1),
 		Method:  "session/prompt",

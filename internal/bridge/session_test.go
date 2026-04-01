@@ -87,6 +87,12 @@ func (a *acpTestServer) handler() http.HandlerFunc {
 					JSONRPC: "2.0", ID: rpcReq.ID,
 					Result: json.RawMessage(`{"sessionId":"sess-test"}`),
 				})
+			case "session/set_config_option":
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+					JSONRPC: "2.0", ID: rpcReq.ID,
+					Result: json.RawMessage(`{}`),
+				})
 			case "session/prompt":
 				// Extract prompt text from params.
 				params, _ := json.Marshal(rpcReq.Params)

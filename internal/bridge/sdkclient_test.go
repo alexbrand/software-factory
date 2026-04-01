@@ -59,6 +59,13 @@ func TestCreateACPSession(t *testing.T) {
 				ID:      rpcReq.ID,
 				Result:  json.RawMessage(`{"sessionId":"sess-abc"}`),
 			})
+		case "session/set_config_option":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      rpcReq.ID,
+				Result:  json.RawMessage(`{}`),
+			})
 		default:
 			t.Errorf("unexpected method: %s", rpcReq.Method)
 		}
@@ -73,8 +80,8 @@ func TestCreateACPSession(t *testing.T) {
 	if !strings.HasPrefix(id, "bridge-") {
 		t.Errorf("expected server ID starting with bridge-, got %s", id)
 	}
-	if callCount != 2 {
-		t.Errorf("expected 2 RPC calls (initialize + session/new), got %d", callCount)
+	if callCount != 3 {
+		t.Errorf("expected 3 RPC calls (initialize + session/new + set_config_option), got %d", callCount)
 	}
 	// Verify session ID was stored.
 	if client.getSessionID(id) != "sess-abc" {
