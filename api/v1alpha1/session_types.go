@@ -1,0 +1,89 @@
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// SessionPhase represents the current phase of a Session.
+// +kubebuilder:validation:Enum=Pending;Active;Completed;Failed;Cancelled
+type SessionPhase string
+
+const (
+	SessionPhasePending   SessionPhase = "Pending"
+	SessionPhaseActive    SessionPhase = "Active"
+	SessionPhaseCompleted SessionPhase = "Completed"
+	SessionPhaseFailed    SessionPhase = "Failed"
+	SessionPhaseCancelled SessionPhase = "Cancelled"
+)
+
+// SessionSpec defines the desired state of a Session.
+type SessionSpec struct {
+	// SandboxRef references the sandbox this session runs in.
+	SandboxRef LocalObjectReference `json:"sandboxRef"`
+
+	// TaskRef references the task this session is executing.
+	// +optional
+	TaskRef *LocalObjectReference `json:"taskRef,omitempty"`
+
+	// AgentType identifies the type of agent for this session.
+	AgentType string `json:"agentType"`
+
+	// Prompt is the prompt to send to the agent.
+	Prompt string `json:"prompt"`
+
+	// ContextFiles is a list of file paths to provide as context.
+	// +optional
+	ContextFiles []string `json:"contextFiles,omitempty"`
+}
+
+// SessionStatus defines the observed state of a Session.
+type SessionStatus struct {
+	// Phase is the current phase of the session.
+	// +optional
+	Phase SessionPhase `json:"phase,omitempty"`
+
+	// StartedAt is the time the session started.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// CompletedAt is the time the session completed.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+
+	// EventStreamSubject is the NATS subject for this session's event stream.
+	// +optional
+	EventStreamSubject string `json:"eventStreamSubject,omitempty"`
+
+	// TokenUsage tracks token consumption for this session.
+	// +optional
+	TokenUsage *TokenUsage `json:"tokenUsage,omitempty"`
+
+	// Conditions represent the latest available observations of the session's state.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+
+// Session represents an agent session in a sandbox.
+type Session struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   SessionSpec   `json:"spec,omitempty"`
+	Status SessionStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// SessionList contains a list of Sessions.
+type SessionList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Session `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&Session{}, &SessionList{})
+}

@@ -1,1 +1,2 @@
-Task 1: Project Scaffolding - Complete
+Task 2: CRD Type Definitions — complete
+All types defined in api/v1alpha1/ and verified with go build, go vet, go test.
