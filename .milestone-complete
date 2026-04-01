@@ -1,1 +1,25 @@
-Task 4: Sandbox Controller - Complete
+Task 5: Workflow and Task Controllers - Complete
+
+Implemented:
+- DAG validation helper (internal/controller/dag.go)
+  - Topological sort cycle detection
+  - Root node finder
+  - Runnable task finder given completed set
+- Workflow Controller (internal/controller/workflow_controller.go)
+  - DAG validation on create
+  - Root task creation on workflow start
+  - Downstream task creation when dependencies met
+  - Workflow Succeeded/Failed based on task outcomes
+  - Finalizer-based task cancellation on delete
+  - Workflow defaults (pool, timeout, retries) applied to tasks
+- Task Controller (internal/controller/task_controller.go)
+  - Sandbox claiming from pool (Ready -> Assigned)
+  - Session creation for agent execution
+  - Session result handling (Succeeded/Failed/Cancelled)
+  - Retry logic with configurable retry count
+  - Timeout enforcement with session cancellation
+  - Sandbox release back to pool on completion
+- Both controllers registered in cmd/controller-manager/main.go
+- Table-driven tests for all components (38 tests total)
+
+Verification: go build, go vet, go test all pass.
