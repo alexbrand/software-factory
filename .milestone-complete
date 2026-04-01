@@ -1,1 +1,15 @@
-Task 8: API Server - Complete
+Task 9: Bridge Sidecar - Complete
+
+Components implemented:
+- internal/bridge/sdkclient.go — HTTP client for Sandbox Agent SDK (ACP, filesystem, health)
+- internal/bridge/session.go — Session manager (start, message, cancel, event streaming)
+- internal/bridge/events.go — Event forwarder (SSE → NATS JetStream normalization)
+- internal/bridge/credproxy.go — HTTP/HTTPS credential proxy with secret injection
+- internal/bridge/status.go — Periodic SDK health and session status reporter
+- internal/bridge/server.go — HTTP server (POST /sessions, POST /sessions/{id}/messages, DELETE /sessions/{id}, GET /healthz)
+- cmd/bridge/main.go — Main entry point with config parsing and service wiring
+
+Verification:
+- go build ./... — PASS
+- go vet ./... — PASS
+- go test ./... -count=1 — PASS
