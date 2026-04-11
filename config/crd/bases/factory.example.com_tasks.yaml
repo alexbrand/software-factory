@@ -177,6 +177,7 @@ spec:
                 enum:
                 - Pending
                 - Running
+                - WaitingForApproval
                 - Succeeded
                 - Failed
                 - Cancelled

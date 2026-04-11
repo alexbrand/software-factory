@@ -137,6 +137,15 @@ spec:
               displayName:
                 description: DisplayName is a human-readable name for the agent type.
                 type: string
+              permissionMode:
+                description: |-
+                  PermissionMode controls how runtime permission requests are handled.
+                  Defaults to "bypass".
+                enum:
+                - bypass
+                - autoApprove
+                - requireApproval
+                type: string
               sdk:
                 description: SDK configures the Sandbox Agent SDK container.
                 properties:

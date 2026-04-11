@@ -5,15 +5,16 @@ import (
 )
 
 // TaskPhase represents the current phase of a Task.
-// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Cancelled
+// +kubebuilder:validation:Enum=Pending;Running;WaitingForApproval;Succeeded;Failed;Cancelled
 type TaskPhase string
 
 const (
-	TaskPhasePending   TaskPhase = "Pending"
-	TaskPhaseRunning   TaskPhase = "Running"
-	TaskPhaseSucceeded TaskPhase = "Succeeded"
-	TaskPhaseFailed    TaskPhase = "Failed"
-	TaskPhaseCancelled TaskPhase = "Cancelled"
+	TaskPhasePending            TaskPhase = "Pending"
+	TaskPhaseRunning            TaskPhase = "Running"
+	TaskPhaseWaitingForApproval TaskPhase = "WaitingForApproval"
+	TaskPhaseSucceeded          TaskPhase = "Succeeded"
+	TaskPhaseFailed             TaskPhase = "Failed"
+	TaskPhaseCancelled          TaskPhase = "Cancelled"
 )
 
 // TaskSpec defines the desired state of a Task.
