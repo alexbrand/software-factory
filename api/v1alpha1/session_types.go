@@ -5,16 +5,33 @@ import (
 )
 
 // SessionPhase represents the current phase of a Session.
-// +kubebuilder:validation:Enum=Pending;Active;Completed;Failed;Cancelled
+// +kubebuilder:validation:Enum=Pending;Active;WaitingForApproval;Completed;Failed;Cancelled
 type SessionPhase string
 
 const (
-	SessionPhasePending   SessionPhase = "Pending"
-	SessionPhaseActive    SessionPhase = "Active"
-	SessionPhaseCompleted SessionPhase = "Completed"
-	SessionPhaseFailed    SessionPhase = "Failed"
-	SessionPhaseCancelled SessionPhase = "Cancelled"
+	SessionPhasePending            SessionPhase = "Pending"
+	SessionPhaseActive             SessionPhase = "Active"
+	SessionPhaseWaitingForApproval SessionPhase = "WaitingForApproval"
+	SessionPhaseCompleted          SessionPhase = "Completed"
+	SessionPhaseFailed             SessionPhase = "Failed"
+	SessionPhaseCancelled          SessionPhase = "Cancelled"
 )
+
+// PendingApproval contains summary info about a pending permission request.
+// Full request details are in NATS, not etcd.
+type PendingApproval struct {
+	// ID is the unique identifier for this permission request.
+	ID string `json:"id"`
+
+	// ToolName is the tool the agent wants to execute.
+	ToolName string `json:"toolName"`
+
+	// Title is a human-readable summary of the request.
+	Title string `json:"title"`
+
+	// RequestedAt is when the permission was requested.
+	RequestedAt metav1.Time `json:"requestedAt"`
+}
 
 // SessionSpec defines the desired state of a Session.
 type SessionSpec struct {
@@ -53,6 +70,11 @@ type SessionStatus struct {
 	// EventStreamSubject is the NATS subject for this session's event stream.
 	// +optional
 	EventStreamSubject string `json:"eventStreamSubject,omitempty"`
+
+	// PendingApproval contains summary info about a pending permission request.
+	// Present only when Phase is WaitingForApproval.
+	// +optional
+	PendingApproval *PendingApproval `json:"pendingApproval,omitempty"`
 
 	// TokenUsage tracks token consumption for this session.
 	// +optional

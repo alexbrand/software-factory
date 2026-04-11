@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -44,8 +45,9 @@ func NewSDKClientWithHTTP(baseURL string, httpClient *http.Client) *SDKClient {
 
 // ACPConfig holds configuration for creating an ACP session.
 type ACPConfig struct {
-	Agent   string `json:"agent"`
-	WorkDir string `json:"workDir,omitempty"`
+	Agent          string `json:"agent"`
+	WorkDir        string `json:"workDir,omitempty"`
+	PermissionMode string `json:"permissionMode,omitempty"`
 }
 
 // ACPSessionResponse is the response from creating an ACP session.
@@ -203,37 +205,45 @@ func (c *SDKClient) CreateACPSession(ctx context.Context, cfg ACPConfig) (string
 
 	c.setSessionID(serverID, sessionResult.SessionID)
 
-	// Step 3: Set permission mode to bypass so tool calls don't block waiting
-	// for interactive approval (there is no human in the loop).
-	_, err = c.sendRPC(ctx, acpURL, jsonRPCRequest{
-		JSONRPC: "2.0",
-		ID:      c.nextID.Add(1),
-		Method:  "session/set_config_option",
-		Params: map[string]interface{}{
-			"sessionId": sessionResult.SessionID,
-			"configId":  "mode",
-			"value":     "bypassPermissions",
-		},
-	})
-	if err != nil {
-		// Non-fatal — the session can still work, just with permission prompts.
-		_ = err
+	// Step 3: Set permission mode. In bypass mode (default), set bypassPermissions
+	// so tool calls don't block. In autoApprove/requireApproval modes, skip this
+	// so the SDK emits permission request events.
+	if cfg.PermissionMode == "" || cfg.PermissionMode == "bypass" {
+		_, err = c.sendRPC(ctx, acpURL, jsonRPCRequest{
+			JSONRPC: "2.0",
+			ID:      c.nextID.Add(1),
+			Method:  "session/set_config_option",
+			Params: map[string]interface{}{
+				"sessionId": sessionResult.SessionID,
+				"configId":  "mode",
+				"value":     "bypassPermissions",
+			},
+		})
+		if err != nil {
+			// Non-fatal — the session can still work, just with permission prompts.
+			_ = err
+		}
 	}
 
 	return serverID, nil
 }
 
-// sessionIDs maps server IDs to ACP session IDs. This is a simple in-process
+// sessionIDMap maps server IDs to ACP session IDs. This is a simple in-process
 // mapping since each bridge sidecar runs a small number of concurrent sessions.
 var sessionIDMap = struct {
+	sync.RWMutex
 	m map[string]string
 }{m: make(map[string]string)}
 
 func (c *SDKClient) setSessionID(serverID, sessionID string) {
+	sessionIDMap.Lock()
 	sessionIDMap.m[serverID] = sessionID
+	sessionIDMap.Unlock()
 }
 
 func (c *SDKClient) getSessionID(serverID string) string {
+	sessionIDMap.RLock()
+	defer sessionIDMap.RUnlock()
 	return sessionIDMap.m[serverID]
 }
 
@@ -358,7 +368,9 @@ func (c *SDKClient) CloseACPSession(ctx context.Context, serverID string) error 
 	}
 
 	// Clean up session ID mapping.
+	sessionIDMap.Lock()
 	delete(sessionIDMap.m, serverID)
+	sessionIDMap.Unlock()
 
 	return nil
 }

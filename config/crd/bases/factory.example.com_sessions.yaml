@@ -142,11 +142,36 @@ spec:
                 description: EventStreamSubject is the NATS subject for this session's
                   event stream.
                 type: string
+              pendingApproval:
+                description: |-
+                  PendingApproval contains summary info about a pending permission request.
+                  Present only when Phase is WaitingForApproval.
+                properties:
+                  id:
+                    description: ID is the unique identifier for this permission request.
+                    type: string
+                  requestedAt:
+                    description: RequestedAt is when the permission was requested.
+                    format: date-time
+                    type: string
+                  title:
+                    description: Title is a human-readable summary of the request.
+                    type: string
+                  toolName:
+                    description: ToolName is the tool the agent wants to execute.
+                    type: string
+                required:
+                - id
+                - requestedAt
+                - title
+                - toolName
+                type: object
               phase:
                 description: Phase is the current phase of the session.
                 enum:
                 - Pending
                 - Active
+                - WaitingForApproval
                 - Completed
                 - Failed
                 - Cancelled

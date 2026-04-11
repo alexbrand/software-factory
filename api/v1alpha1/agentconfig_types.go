@@ -4,6 +4,23 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// PermissionMode controls how the bridge handles runtime permission requests from the agent.
+// +kubebuilder:validation:Enum=bypass;autoApprove;requireApproval
+type PermissionMode string
+
+const (
+	// PermissionModeBypass sets bypassPermissions on the agent session.
+	// The agent never emits permission requests. This is the default.
+	PermissionModeBypass PermissionMode = "bypass"
+
+	// PermissionModeAutoApprove makes the bridge auto-respond "allow" to every request.
+	PermissionModeAutoApprove PermissionMode = "autoApprove"
+
+	// PermissionModeRequireApproval makes the bridge publish requests to NATS
+	// and wait for external approval.
+	PermissionModeRequireApproval PermissionMode = "requireApproval"
+)
+
 // AgentConfigSpec defines the desired state of an AgentConfig.
 type AgentConfigSpec struct {
 	// AgentType is the agent identifier (must match SDK's agent identifier).
@@ -12,6 +29,11 @@ type AgentConfigSpec struct {
 	// DisplayName is a human-readable name for the agent type.
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
+
+	// PermissionMode controls how runtime permission requests are handled.
+	// Defaults to "bypass".
+	// +optional
+	PermissionMode PermissionMode `json:"permissionMode,omitempty"`
 
 	// SDK configures the Sandbox Agent SDK container.
 	SDK SDKConfig `json:"sdk"`

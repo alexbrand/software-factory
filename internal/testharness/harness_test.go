@@ -113,15 +113,16 @@ func TestHarness_Smoke(t *testing.T) {
 		}
 		sb := &sbList.Items[0]
 
-		// Mark sandbox as Ready with a pod name.
-		sb.Status.Phase = factoryv1alpha1.SandboxPhaseReady
-		sb.Status.PodName = "fake-pod"
-		if err := h.K8sClient().Status().Update(ctx, sb); err != nil {
-			t.Fatalf("marking sandbox ready: %v", err)
-		}
+		// Wait for sandbox controller to create the pod and set PodName.
+		testharness.WaitFor(t, 10*time.Second, 200*time.Millisecond, func() bool {
+			if err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(sb), sb); err != nil {
+				return false
+			}
+			return sb.Status.PodName != ""
+		})
 
-		// Create a fake pod so the session controller can resolve the bridge endpoint.
-		h.CreateFakePod(ctx, "smoke-test", "fake-pod", "10.0.0.1")
+		// Set pod IP (envtest has no kubelet so pods never get IPs).
+		h.SetPodIP(ctx, "smoke-test", sb.Status.PodName, "10.0.0.1")
 
 		// Create a Session CR directly (as the task controller would).
 		session := &factoryv1alpha1.Session{

@@ -27,6 +27,22 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
+// mockPermissionPublisher captures published permission decisions.
+type mockPermissionPublisher struct {
+	published []struct {
+		Subject string
+		Data    []byte
+	}
+}
+
+func (m *mockPermissionPublisher) Publish(subject string, data []byte) error {
+	m.published = append(m.published, struct {
+		Subject string
+		Data    []byte
+	}{Subject: subject, Data: data})
+	return nil
+}
+
 func testHandlers(objs ...client.Object) (*Handlers, *http.ServeMux) {
 	c := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).WithStatusSubresource(objs...).Build()
 	h := NewHandlers(c, nil, testLogger(), "default")
@@ -38,6 +54,7 @@ func testHandlers(objs ...client.Object) (*Handlers, *http.ServeMux) {
 	mux.HandleFunc("POST /v1/tasks", h.CreateTask)
 	mux.HandleFunc("GET /v1/tasks/{id}", h.GetTask)
 	mux.HandleFunc("GET /v1/tasks/{id}/events", h.StreamTaskEvents)
+	mux.HandleFunc("POST /v1/sessions/{id}/permissions/{permissionId}", h.ApprovePermission)
 	mux.HandleFunc("GET /v1/pools", h.ListPools)
 	mux.HandleFunc("GET /v1/pools/{id}", h.GetPool)
 	return h, mux
@@ -415,6 +432,175 @@ func TestListWorkflowTasks(t *testing.T) {
 	}
 	if tasks[0].Name != "wf1-t1" {
 		t.Errorf("expected wf1-t1, got %s", tasks[0].Name)
+	}
+}
+
+func TestApprovePermission(t *testing.T) {
+	session := &factoryv1alpha1.Session{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sess-1",
+			Namespace: "default",
+		},
+		Spec: factoryv1alpha1.SessionSpec{
+			SandboxRef: factoryv1alpha1.LocalObjectReference{Name: "sb-1"},
+			AgentType:  "claude-code",
+			Prompt:     "do it",
+		},
+		Status: factoryv1alpha1.SessionStatus{
+			Phase: factoryv1alpha1.SessionPhaseWaitingForApproval,
+			PendingApproval: &factoryv1alpha1.PendingApproval{
+				ID:       "perm-abc",
+				ToolName: "Bash",
+				Title:    "rm -rf /tmp",
+			},
+		},
+	}
+
+	pub := &mockPermissionPublisher{}
+	h, mux := testHandlers(session)
+	h.SetPermissionPublisher(pub)
+
+	body := PermissionDecisionRequest{Decision: "allow", Remember: "session"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-1/permissions/perm-abc", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp PermissionDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if resp.Decision != "allow" {
+		t.Errorf("expected decision 'allow', got %s", resp.Decision)
+	}
+	if resp.PermissionID != "perm-abc" {
+		t.Errorf("expected permissionId 'perm-abc', got %s", resp.PermissionID)
+	}
+
+	// Verify NATS publish was called.
+	if len(pub.published) != 1 {
+		t.Fatalf("expected 1 publish, got %d", len(pub.published))
+	}
+	if pub.published[0].Subject != "permissions.perm-abc" {
+		t.Errorf("expected subject 'permissions.perm-abc', got %s", pub.published[0].Subject)
+	}
+}
+
+func TestApprovePermission_SessionNotFound(t *testing.T) {
+	_, mux := testHandlers()
+
+	body := PermissionDecisionRequest{Decision: "allow"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/nonexistent/permissions/perm-1", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestApprovePermission_NotWaiting(t *testing.T) {
+	session := &factoryv1alpha1.Session{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sess-active",
+			Namespace: "default",
+		},
+		Spec: factoryv1alpha1.SessionSpec{
+			SandboxRef: factoryv1alpha1.LocalObjectReference{Name: "sb-1"},
+			AgentType:  "claude-code",
+			Prompt:     "do it",
+		},
+		Status: factoryv1alpha1.SessionStatus{
+			Phase: factoryv1alpha1.SessionPhaseActive,
+		},
+	}
+
+	h, mux := testHandlers(session)
+	h.SetPermissionPublisher(&mockPermissionPublisher{})
+
+	body := PermissionDecisionRequest{Decision: "allow"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-active/permissions/perm-1", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestApprovePermission_WrongPermissionID(t *testing.T) {
+	session := &factoryv1alpha1.Session{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sess-2",
+			Namespace: "default",
+		},
+		Spec: factoryv1alpha1.SessionSpec{
+			SandboxRef: factoryv1alpha1.LocalObjectReference{Name: "sb-1"},
+			AgentType:  "claude-code",
+			Prompt:     "do it",
+		},
+		Status: factoryv1alpha1.SessionStatus{
+			Phase: factoryv1alpha1.SessionPhaseWaitingForApproval,
+			PendingApproval: &factoryv1alpha1.PendingApproval{
+				ID:       "perm-real",
+				ToolName: "Bash",
+				Title:    "ls",
+			},
+		},
+	}
+
+	h, mux := testHandlers(session)
+	h.SetPermissionPublisher(&mockPermissionPublisher{})
+
+	body := PermissionDecisionRequest{Decision: "allow"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-2/permissions/perm-wrong", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestApprovePermission_InvalidDecision(t *testing.T) {
+	session := &factoryv1alpha1.Session{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sess-3",
+			Namespace: "default",
+		},
+		Spec: factoryv1alpha1.SessionSpec{
+			SandboxRef: factoryv1alpha1.LocalObjectReference{Name: "sb-1"},
+			AgentType:  "claude-code",
+			Prompt:     "do it",
+		},
+		Status: factoryv1alpha1.SessionStatus{
+			Phase: factoryv1alpha1.SessionPhaseWaitingForApproval,
+			PendingApproval: &factoryv1alpha1.PendingApproval{
+				ID:       "perm-x",
+				ToolName: "Bash",
+				Title:    "ls",
+			},
+		},
+	}
+
+	h, mux := testHandlers(session)
+	h.SetPermissionPublisher(&mockPermissionPublisher{})
+
+	body := PermissionDecisionRequest{Decision: "maybe"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-3/permissions/perm-x", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

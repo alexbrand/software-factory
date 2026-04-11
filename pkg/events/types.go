@@ -22,12 +22,32 @@ const (
 	EventToolCall   EventType = "tool.call"
 	EventToolResult EventType = "tool.result"
 
+	// Permission gating events.
+	EventPermissionRequested EventType = "session.permission_requested"
+	EventPermissionResponded EventType = "session.permission_responded"
+
 	// Token usage events.
 	EventTokenUsage EventType = "token.usage"
 
 	// Error events.
 	EventError EventType = "error"
 )
+
+// PermissionRequestData is the payload for session.permission_requested events.
+type PermissionRequestData struct {
+	PermissionID string          `json:"permissionId"`
+	ToolName     string          `json:"toolName"`
+	Title        string          `json:"title"`
+	Arguments    json.RawMessage `json:"arguments"`
+}
+
+// PermissionResponseData is the payload for session.permission_responded events.
+type PermissionResponseData struct {
+	PermissionID string `json:"permissionId"`
+	Decision     string `json:"decision"`
+	Remember     string `json:"remember,omitempty"`
+	RespondedBy  string `json:"respondedBy,omitempty"`
+}
 
 // Event is the normalized event envelope published to NATS JetStream.
 type Event struct {

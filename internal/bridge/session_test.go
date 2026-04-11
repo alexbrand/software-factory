@@ -152,10 +152,12 @@ func TestSessionManagerStartSession(t *testing.T) {
 			{Path: "/workspace/CLAUDE.md", Content: "# Instructions"},
 		},
 		WorkDir: "/workspace",
-	}, func(ev SSEEvent) {
-		eventMu.Lock()
-		receivedEvents = append(receivedEvents, ev)
-		eventMu.Unlock()
+	}, func(_ string) func(SSEEvent) {
+		return func(ev SSEEvent) {
+			eventMu.Lock()
+			receivedEvents = append(receivedEvents, ev)
+			eventMu.Unlock()
+		}
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -204,7 +206,7 @@ func TestSessionManagerSendMessage(t *testing.T) {
 	id, err := sm.StartSession(context.Background(), StartSessionConfig{
 		AgentType: "claude-code",
 		Prompt:    "initial",
-	}, func(_ SSEEvent) {})
+	}, func(_ string) func(SSEEvent) { return func(_ SSEEvent) {} })
 	if err != nil {
 		t.Fatalf("unexpected error starting session: %v", err)
 	}
@@ -248,7 +250,7 @@ func TestSessionManagerCancelSession(t *testing.T) {
 	id, err := sm.StartSession(context.Background(), StartSessionConfig{
 		AgentType: "claude-code",
 		Prompt:    "do something",
-	}, func(_ SSEEvent) {})
+	}, func(_ string) func(SSEEvent) { return func(_ SSEEvent) {} })
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

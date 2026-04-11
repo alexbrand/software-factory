@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // WaitFor polls until condition returns true or times out.
@@ -33,30 +34,25 @@ func (h *Harness) CreateNamespace(ctx context.Context, name string) {
 	}
 }
 
-// CreateFakePod creates a minimal Pod object with a PodIP so that the session
-// controller can resolve the bridge endpoint. In envtest there is no kubelet,
-// so pods never get IPs naturally.
-func (h *Harness) CreateFakePod(ctx context.Context, namespace, name, podIP string) {
+// SetPodIP waits for a pod to exist and sets its PodIP status.
+// In envtest there is no kubelet, so pods never get IPs naturally.
+// The sandbox controller creates pods, so we just need to set the IP.
+// Retries to handle conflicts from concurrent controller reconciliation.
+func (h *Harness) SetPodIP(ctx context.Context, namespace, name, podIP string) {
 	h.t.Helper()
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{Name: "sdk", Image: "fake:latest"},
-			},
-		},
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var pod corev1.Pod
+		if err := h.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &pod); err != nil {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		pod.Status.PodIP = podIP
+		pod.Status.Phase = corev1.PodRunning
+		if err := h.k8sClient.Status().Update(ctx, &pod); err == nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	if err := h.k8sClient.Create(ctx, pod); err != nil {
-		h.t.Fatalf("creating fake pod %s/%s: %v", namespace, name, err)
-	}
-
-	// Set pod IP in status.
-	pod.Status.PodIP = podIP
-	pod.Status.Phase = corev1.PodRunning
-	if err := h.k8sClient.Status().Update(ctx, pod); err != nil {
-		h.t.Fatalf("updating fake pod status %s/%s: %v", namespace, name, err)
-	}
+	h.t.Fatalf("timed out setting pod IP for %s/%s", namespace, name)
 }

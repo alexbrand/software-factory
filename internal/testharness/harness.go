@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
@@ -95,11 +96,13 @@ func (h *Harness) Start() {
 	// 3. Fake SDK.
 	h.fakeSDK = NewFakeSDK()
 
-	// 4. Bridge stack: SDKClient → SessionManager → EventForwarder → Server.
+	// 4. Bridge stack: SDKClient → SessionManager → EventForwarder → PermissionHandler → Server.
 	sdkClient := bridge.NewSDKClient(h.fakeSDK.URL())
 	sessionManager := bridge.NewSessionManager(sdkClient, h.logger)
 	eventForwarder := bridge.NewEventForwarder(h.publisher, h.namespace, h.logger)
+	permHandler := bridge.NewPermissionHandler(h.publisher, h.natsConn, h.namespace, h.logger)
 	bridgeServer := bridge.NewServer(sessionManager, eventForwarder, h.logger)
+	bridgeServer.SetPermissionHandler(permHandler)
 	h.bridgeHTTP = httptest.NewServer(bridgeServer.Handler())
 
 	// 5. Envtest + controllers.
@@ -133,7 +136,13 @@ func (h *Harness) startKubernetes() {
 		h.t.Fatalf("adding scheme: %v", err)
 	}
 
-	h.mgr, err = ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme.Scheme})
+	skipNameValidation := true
+	h.mgr, err = ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme.Scheme,
+		Controller: ctrlconfig.Controller{
+			SkipNameValidation: &skipNameValidation,
+		},
+	})
 	if err != nil {
 		h.t.Fatalf("creating manager: %v", err)
 	}
@@ -167,7 +176,8 @@ func (h *Harness) startKubernetes() {
 			// Always route to our test bridge, ignoring the pod IP-based URL.
 			return bridge.NewClient(bridgeURL)
 		},
-		EventPublisher: h.publisher,
+		EventPublisher:  h.publisher,
+		EventSubscriber: &controllerSubscriberAdapter{sub: h.subscriber},
 	}).SetupWithManager(h.mgr); err != nil {
 		h.t.Fatalf("setting up session controller: %v", err)
 	}
@@ -194,6 +204,7 @@ func (h *Harness) startAPIServer() {
 
 	subscriber := &natsSubscriberAdapter{sub: h.subscriber}
 	handlers := apiserver.NewHandlers(h.k8sClient, subscriber, h.logger, h.namespace)
+	handlers.SetPermissionPublisher(&natsPermissionPublisher{conn: h.natsConn})
 	srv := apiserver.NewServer(handlers, ":0", h.logger)
 	h.apiHTTP = httptest.NewServer(srv.Handler())
 }
@@ -252,5 +263,23 @@ type natsSubscriberAdapter struct {
 }
 
 func (a *natsSubscriberAdapter) SubscribeSession(ctx context.Context, namespace, sessionID string, handler func(events.Event)) (apiserver.Subscription, error) {
+	return a.sub.SubscribeSession(ctx, namespace, sessionID, handler)
+}
+
+// natsPermissionPublisher adapts *nats.Conn to apiserver.PermissionPublisher.
+type natsPermissionPublisher struct {
+	conn *nats.Conn
+}
+
+func (p *natsPermissionPublisher) Publish(subject string, data []byte) error {
+	return p.conn.Publish(subject, data)
+}
+
+// controllerSubscriberAdapter adapts events.Subscriber to controller.EventSubscriber.
+type controllerSubscriberAdapter struct {
+	sub *events.Subscriber
+}
+
+func (a *controllerSubscriberAdapter) SubscribeSession(ctx context.Context, namespace, sessionID string, handler func(events.Event)) (controller.EventSubscription, error) {
 	return a.sub.SubscribeSession(ctx, namespace, sessionID, handler)
 }
