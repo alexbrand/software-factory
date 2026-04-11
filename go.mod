@@ -12,6 +12,7 @@ require (
 )
 
 require (
+	github.com/antithesishq/antithesis-sdk-go v0.6.0-default-no-op // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -29,14 +30,18 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/gnostic-models v0.6.8 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
+	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/nats-io/jwt/v2 v2.8.1 // indirect
+	github.com/nats-io/nats-server/v2 v2.12.6 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -55,7 +60,7 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
-	golang.org/x/time v0.7.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/protobuf v1.35.1 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
