@@ -209,6 +209,10 @@ const (
     EventShellExec   EventType = "shell.exec"
     EventShellOutput EventType = "shell.output"
 
+    // Permission gating (see spec/04 Session CR for lifecycle details)
+    EventPermissionRequested  EventType = "session.permission_requested"
+    EventPermissionResponded  EventType = "session.permission_responded"
+
     // Token tracking
     EventTokenUsage EventType = "token.usage"
 
@@ -218,6 +222,96 @@ const (
 ```
 
 We retain the `Raw` field so we can always fall back to the SDK's native event format for debugging or agent-specific analysis.
+
+### Permission Event Data
+
+Permission events carry structured data payloads:
+
+```go
+// PermissionRequestData is the Data payload for EventPermissionRequested.
+type PermissionRequestData struct {
+    PermissionID string `json:"permissionId"` // Unique ID for correlation
+    ToolName     string `json:"toolName"`     // e.g. "Bash", "Write", "Edit"
+    Title        string `json:"title"`        // Human-readable summary
+    // Full tool arguments (command text, file contents, etc.) are included
+    // so SSE consumers can render an approval UI without polling etcd.
+    Arguments    json.RawMessage `json:"arguments"`
+}
+
+// PermissionResponseData is the Data payload for EventPermissionResponded.
+type PermissionResponseData struct {
+    PermissionID string `json:"permissionId"`
+    Decision     string `json:"decision"`  // "allow" or "deny"
+    Remember     string `json:"remember"`  // "once", "session", or "always"
+    RespondedBy  string `json:"respondedBy,omitempty"` // user or "bridge:autoApprove"
+}
+```
+
+## Permission Handling in the Bridge
+
+The bridge sidecar handles runtime permission requests differently based on the AgentConfig's `permissionMode`:
+
+### Mode: `bypass`
+
+The bridge calls `session/set_config_option` with `bypassPermissions: true` immediately after creating the ACP session. The agent never emits permission requests. This is the default.
+
+### Mode: `autoApprove`
+
+The bridge does **not** set `bypassPermissions`. When the SDK's SSE stream contains a `session/request_permission` JSON-RPC request:
+
+1. The bridge immediately responds with `allow_always` via `POST /v1/acp/{server_id}`.
+2. The bridge publishes an `EventPermissionRequested` event followed by an `EventPermissionResponded` event to NATS (for audit trail).
+3. The session stays `Active` — no phase change, no etcd write beyond normal event summaries.
+
+### Mode: `requireApproval`
+
+When the SSE stream contains a `session/request_permission` JSON-RPC request:
+
+1. The bridge publishes an `EventPermissionRequested` event to NATS with full request details.
+2. The bridge subscribes to the NATS reply subject `permissions.{session-id}.{permissionId}` and **blocks** (with a configurable timeout, default 1h).
+3. When a response arrives on the reply subject, the bridge sends the corresponding JSON-RPC response to the SDK via `POST /v1/acp/{server_id}`.
+4. The bridge publishes an `EventPermissionResponded` event to NATS.
+5. If the timeout expires with no response, the bridge responds with `deny` and publishes a timeout event.
+
+```go
+// handlePermissionRequest processes a permission request from the SDK.
+func (b *Bridge) handlePermissionRequest(ctx context.Context, sessionID string, req ACPPermissionRequest) error {
+    permID := uuid.NewString()
+
+    // Publish request event to NATS
+    b.publishEvent(ctx, sessionID, Event{
+        Type: EventPermissionRequested,
+        Data: PermissionRequestData{
+            PermissionID: permID,
+            ToolName:     req.ToolName,
+            Title:        req.Title,
+            Arguments:    req.Arguments,
+        },
+    })
+
+    // Wait for approval on reply subject
+    replySubject := fmt.Sprintf("permissions.%s.%s", sessionID, permID)
+    msg, err := b.natsConn.RequestWithContext(ctx, replySubject, nil)
+    if err != nil {
+        // Timeout or context cancelled — deny by default
+        b.respondToSDK(ctx, sessionID, req.ID, "deny")
+        return err
+    }
+
+    var decision PermissionResponseData
+    json.Unmarshal(msg.Data, &decision)
+
+    // Forward decision to SDK
+    b.respondToSDK(ctx, sessionID, req.ID, decision.Decision)
+
+    // Publish response event
+    b.publishEvent(ctx, sessionID, Event{
+        Type: EventPermissionResponded,
+        Data: decision,
+    })
+    return nil
+}
+```
 
 ## Session Lifecycle
 
@@ -249,6 +343,33 @@ Session Controller                Bridge Sidecar              Sandbox Agent SDK
       │  Session complete event        │                              │
       │◄───────────────────────────────┤                              │
       │  Update Session CR status      │                              │
+```
+
+### Permission Request Flow (requireApproval mode)
+
+```
+External Client         API Server         NATS          Bridge Sidecar          SDK
+      │                     │               │                  │                   │
+      │                     │               │                  │  permission_request│
+      │                     │               │                  │◄──────────────────┤
+      │                     │               │  publish event   │                   │
+      │                     │               │◄─────────────────┤                   │
+      │                     │               │  (subscribe to   │                   │
+      │                     │               │   reply subject)  │                   │
+      │                     │  SSE event    │                  │                   │
+      │  SSE: permission    │◄──────────────┤                  │                   │
+      │  requested          │               │                  │                   │
+      │◄────────────────────┤               │                  │                   │
+      │                     │               │                  │                   │
+      │  POST /permissions  │               │                  │                   │
+      │  {decision: allow}  │               │                  │                   │
+      ├────────────────────►│  publish to   │                  │                   │
+      │                     │  reply subject│                  │                   │
+      │                     ├──────────────►│  deliver reply   │                   │
+      │                     │               ├─────────────────►│  JSON-RPC response│
+      │                     │               │                  ├──────────────────►│
+      │                     │               │                  │  agent resumes    │
+      │                     │               │                  │                   │
 ```
 
 ## Credential Injection
@@ -306,6 +427,9 @@ spec:
   bridge:
     image: ghcr.io/example/factory-bridge:v0.1.0
     port: 8080
+
+  # Permission handling (see "Permission Handling in the Bridge" above)
+  permissionMode: bypass        # bypass | autoApprove | requireApproval
 
   # Agent-specific configuration
   agentSettings:

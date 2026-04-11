@@ -149,6 +149,12 @@ spec:
       initialDelaySeconds: 5
       periodSeconds: 10
 
+  # Permission handling for runtime tool-approval prompts
+  permissionMode: bypass        # bypass | autoApprove | requireApproval
+  # bypass:          Set bypassPermissions on the agent session (no prompts)
+  # autoApprove:     Bridge auto-responds "allow" to every permission request
+  # requireApproval: Bridge publishes request to NATS and waits for external approval
+
   # Agent-specific settings
   agentSettings:
     contextFile: CLAUDE.md      # Which context file the agent reads
@@ -284,7 +290,7 @@ spec:
   retries: 1
 
 status:
-  phase: Running
+  phase: Running              # Pending | Running | WaitingForApproval | Succeeded | Failed | Cancelled
   sandboxRef:
     name: claude-code-pool-abc123
   sessionRef:
@@ -296,6 +302,95 @@ status:
     output: 8000
     cost: "0.42"
 ```
+
+The `WaitingForApproval` task phase is set when the underlying session enters `WaitingForApproval`. It is informational — the Task Controller does not act on it directly; it simply mirrors the session phase so that workflow-level consumers have visibility without reading Session CRs.
+
+### Session
+
+A Session represents a single agent conversation within a sandbox. The Session Controller creates sessions when a Task is assigned to a sandbox and manages them through completion.
+
+```yaml
+apiVersion: factory.example.com/v1alpha1
+kind: Session
+metadata:
+  name: session-xyz789
+  namespace: team-alpha
+  labels:
+    factory.example.com/task: implement-handlers
+    factory.example.com/sandbox: claude-code-pool-abc123
+spec:
+  sandboxRef:
+    name: claude-code-pool-abc123
+  taskRef:
+    name: implement-handlers
+  prompt: |
+    Implement the HTTP handlers based on the API spec.
+  contextFiles:
+    - path: /workspace/api-spec.yaml
+      configMapRef:
+        name: api-spec-artifact
+  timeout: 45m
+
+status:
+  phase: Active             # Pending | Active | WaitingForApproval | Completed | Failed | Cancelled
+  acpServerID: acp-abc123   # SDK ACP server identifier
+  startedAt: "2026-03-27T10:15:00Z"
+  lastEventAt: "2026-03-27T10:30:00Z"
+
+  # Present only when phase is WaitingForApproval
+  pendingApproval:
+    id: "perm-001"          # Unique ID for this permission request
+    toolName: Bash           # Tool the agent wants to execute
+    title: "mkdir -p /workspace/output"  # Human-readable summary
+    requestedAt: "2026-03-27T10:30:00Z"
+    # Full request details (arguments, context) are in NATS, not etcd.
+    # Use the SSE stream or NATS subject to get the complete request.
+
+  tokenUsage:
+    input: 15000
+    output: 8000
+    cost: "0.42"
+  conditions:
+    - type: Ready
+      status: "True"
+    - type: AgentHealthy
+      status: "True"
+```
+
+#### Session Phases
+
+| Phase | Description |
+|-------|-------------|
+| `Pending` | Session CR created, bridge not yet connected |
+| `Active` | Agent is executing, events are streaming |
+| `WaitingForApproval` | Agent blocked on a permission request (only when `permissionMode: requireApproval`) |
+| `Completed` | Agent finished successfully |
+| `Failed` | Agent errored or timed out |
+| `Cancelled` | Session was cancelled by the user or workflow controller |
+
+The `WaitingForApproval` phase is only reachable when the AgentConfig's `permissionMode` is `requireApproval`. In `bypass` mode, the agent never emits permission requests. In `autoApprove` mode, the bridge responds immediately and the session stays `Active`.
+
+#### Permission Request Lifecycle
+
+When `permissionMode: requireApproval`:
+
+1. The SDK agent emits a `session/request_permission` ACP JSON-RPC request.
+2. The bridge normalizes it and publishes to NATS (`events.{tenant}.sessions.{session-id}`).
+3. The bridge publishes a lifecycle event: `session.permission_requested`.
+4. The Session Controller updates the Session CR: phase → `WaitingForApproval`, populates `status.pendingApproval`.
+5. The Task Controller propagates the phase to the Task CR: phase → `WaitingForApproval`.
+6. The API server streams the permission details to external clients via SSE (sourced from NATS, not the CR).
+
+**Approval response:**
+
+1. An external client calls `POST /v1/sessions/{id}/permissions/{permissionId}` with `allow` or `deny`.
+2. The API server publishes the decision to a NATS reply subject.
+3. The bridge receives the decision, sends a JSON-RPC response to the SDK.
+4. The bridge publishes a lifecycle event: `session.permission_responded`.
+5. The Session Controller updates the Session CR: phase → `Active`, clears `status.pendingApproval`.
+6. The Task Controller propagates the phase back to `Running`.
+
+**Design principle:** Only summary data (`toolName`, `title`, `requestedAt`) is stored in etcd via the Session CR. Full permission request payloads (tool arguments, context, rendered diffs) flow through NATS and are served via SSE. This keeps etcd writes low-frequency — one write on request, one on response.
 
 ## Operator Behaviors
 
@@ -339,7 +434,13 @@ status:
 
 2. **On event received**: Publish to NATS stream `sessions.<session-id>`. Update Session CR status with latest event summary.
 
-3. **On session complete**: Set Session CR status to final state. Record token usage and cost metadata.
+3. **On `session.permission_requested` lifecycle event** (only when `permissionMode: requireApproval`): Set Session CR phase to `WaitingForApproval`. Populate `status.pendingApproval` with summary fields (`id`, `toolName`, `title`, `requestedAt`). This is a single etcd write — the full request payload stays in NATS.
+
+4. **On `session.permission_responded` lifecycle event**: Clear `status.pendingApproval`. Set Session CR phase back to `Active`.
+
+5. **On session complete**: Set Session CR status to final state. Record token usage and cost metadata.
+
+**Important:** The Session Controller subscribes only to **lifecycle events** (started, completed, failed, permission_requested, permission_responded) — not the high-frequency tool call and output events. This keeps etcd write volume bounded by session state transitions, not agent activity.
 
 ## API Server
 
@@ -356,8 +457,28 @@ The API server is a Go service that provides a client-facing interface over the 
 | POST | `/v1/tasks` | Submit a standalone task |
 | GET | `/v1/tasks/{id}` | Get task status |
 | GET | `/v1/tasks/{id}/events` | Stream task events (SSE) |
+| GET | `/v1/sessions/{id}` | Get session status |
+| GET | `/v1/sessions/{id}/events` | Stream session events (SSE) |
+| POST | `/v1/sessions/{id}/permissions/{permissionId}` | Approve or deny a permission request |
 | GET | `/v1/pools` | List pools |
 | GET | `/v1/pools/{id}` | Get pool status |
 | PATCH | `/v1/pools/{id}/scale` | Adjust pool scaling |
+
+#### Permission Approval Endpoint
+
+```
+POST /v1/sessions/{id}/permissions/{permissionId}
+Content-Type: application/json
+
+{
+  "decision": "allow",        // "allow" or "deny"
+  "remember": "session"       // optional: "once" | "session" | "always"
+}
+```
+
+- `decision`: Whether to allow or deny the tool execution.
+- `remember`: Scope of the decision. `once` applies to this request only. `session` auto-applies the same decision for the same tool for the rest of the session. `always` persists to future sessions (stored in AgentConfig annotation).
+
+The API server publishes the decision to the NATS reply subject `permissions.{session-id}.{permissionId}`. The bridge subscribes to this subject and forwards the response to the SDK as a JSON-RPC reply. The SSE stream on `/v1/sessions/{id}/events` includes permission request and response events, so clients can build interactive approval UIs.
 
 All endpoints require authentication (bearer token or mTLS) and respect Kubernetes RBAC via impersonation.

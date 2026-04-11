@@ -244,6 +244,22 @@ tasks:
 
 Approval tasks don't consume a sandbox. They create a notification (webhook, email, Slack) and wait for an explicit approval via the API.
 
+#### Workflow-Level vs. Session-Level Approval
+
+The system supports two distinct approval mechanisms at different granularities:
+
+| | Workflow-Level Approval | Session-Level Permission Gating |
+|---|---|---|
+| **Scope** | Between tasks in a DAG | During a single agent session |
+| **Granularity** | Coarse — gates entire workflow stages | Fine — individual tool executions |
+| **Trigger** | `type: approval` task in the DAG | Agent emits `session/request_permission` |
+| **Blocks** | Downstream tasks from starting | The agent from executing a specific tool |
+| **Configuration** | Workflow spec (`tasks[].type`) | AgentConfig (`permissionMode`) |
+| **Response path** | API → Task Controller → workflow resumes | API → NATS → Bridge → SDK → agent resumes |
+| **Spec reference** | This document (07) | [04 - Control Plane](04-control-plane.md) (Session CR), [06 - Agent Adapter](06-agent-adapter.md) (Bridge handling) |
+
+These mechanisms are **complementary**. A workflow can use approval tasks to gate stages (e.g., "review before deploy") while individual sessions within those stages use `requireApproval` to gate tool execution (e.g., "approve before running `rm -rf`"). They do not overlap — approval tasks are DAG-level concerns; permission gating is session-level.
+
 ## Workflow Templates
 
 Reusable workflow patterns can be defined as templates:
