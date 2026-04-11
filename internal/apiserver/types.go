@@ -68,6 +68,20 @@ type PoolResponse struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// PermissionDecisionRequest is the request body for POST /v1/sessions/{id}/permissions/{permissionId}.
+type PermissionDecisionRequest struct {
+	Decision string `json:"decision"` // "allow" or "deny"
+	Remember string `json:"remember,omitempty"` // "once", "session", or "always"
+}
+
+// PermissionDecisionResponse is the response for permission approval.
+type PermissionDecisionResponse struct {
+	PermissionID string `json:"permissionId"`
+	Decision     string `json:"decision"`
+	Remember     string `json:"remember,omitempty"`
+	RespondedBy  string `json:"respondedBy,omitempty"`
+}
+
 // ErrorResponse is returned on errors.
 type ErrorResponse struct {
 	Error   string `json:"error"`

@@ -26,6 +26,9 @@ func NewServer(h *Handlers, addr string, logger *slog.Logger) *Server {
 	mux.HandleFunc("GET /v1/tasks/{id}", h.GetTask)
 	mux.HandleFunc("GET /v1/tasks/{id}/events", h.StreamTaskEvents)
 
+	// Session endpoints.
+	mux.HandleFunc("POST /v1/sessions/{id}/permissions/{permissionId}", h.ApprovePermission)
+
 	// Pool endpoints.
 	mux.HandleFunc("GET /v1/pools", h.ListPools)
 	mux.HandleFunc("GET /v1/pools/{id}", h.GetPool)

@@ -3,6 +3,9 @@ package testharness_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -183,39 +186,32 @@ func TestPermissionGating_RequireApproval(t *testing.T) {
 		})
 	})
 
-	// === ACT: Approve the permission via NATS reply subject ===
-	// In the real system, the API server does this. Here we publish directly.
+	// === ACT: Approve the permission via the API endpoint ===
 	t.Run("approve and session resumes", func(t *testing.T) {
-		// Find the permission ID from the NATS event.
-		var permID string
-		for _, ev := range permissionEvents {
-			if ev.Type == events.EventPermissionRequested {
-				var data events.PermissionRequestData
-				_ = json.Unmarshal(ev.Data, &data)
-				permID = data.PermissionID
-				break
-			}
-		}
-		if permID == "" {
-			t.Fatal("no permission ID found in events")
-		}
-
-		// Get the session's server ID for the reply subject.
+		// Get the session to read the permission ID.
 		var s factoryv1alpha1.Session
 		if err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s); err != nil {
 			t.Fatalf("getting session: %v", err)
 		}
+		if s.Status.PendingApproval == nil {
+			t.Fatal("expected pendingApproval to be set")
+			return
+		}
+		permID := s.Status.PendingApproval.ID
 
-		// Publish approval to the NATS reply subject.
-		replySubject := "permissions." + s.Status.PendingApproval.ID
-		decision, _ := json.Marshal(events.PermissionResponseData{
-			PermissionID: permID,
-			Decision:     "allow",
-			Remember:     "once",
-			RespondedBy:  "test",
-		})
-		if err := h.NATSConn().Publish(replySubject, decision); err != nil {
-			t.Fatalf("publishing approval: %v", err)
+		// Approve via the API server endpoint.
+		api := h.APIClient()
+		resp, err := api.Raw(http.MethodPost,
+			fmt.Sprintf("/v1/sessions/perm-session/permissions/%s", permID),
+			map[string]string{"decision": "allow", "remember": "once"},
+		)
+		if err != nil {
+			t.Fatalf("approving permission: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
 		}
 
 		// === ASSERT: Session moves back to Active ===

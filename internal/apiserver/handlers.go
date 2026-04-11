@@ -27,12 +27,18 @@ type Subscription interface {
 	Unsubscribe() error
 }
 
+// PermissionPublisher publishes permission decisions to NATS reply subjects.
+type PermissionPublisher interface {
+	Publish(subject string, data []byte) error
+}
+
 // Handlers holds dependencies for HTTP handlers.
 type Handlers struct {
-	client     client.Client
-	subscriber EventSubscriber
-	logger     *slog.Logger
-	namespace  string
+	client              client.Client
+	subscriber          EventSubscriber
+	permissionPublisher PermissionPublisher
+	logger              *slog.Logger
+	namespace           string
 }
 
 // NewHandlers creates a new Handlers instance.
@@ -43,6 +49,11 @@ func NewHandlers(c client.Client, subscriber EventSubscriber, logger *slog.Logge
 		logger:     logger,
 		namespace:  namespace,
 	}
+}
+
+// SetPermissionPublisher sets the NATS publisher for permission decisions.
+func (h *Handlers) SetPermissionPublisher(pp PermissionPublisher) {
+	h.permissionPublisher = pp
 }
 
 func (h *Handlers) resolveNamespace(ns string) string {
@@ -309,6 +320,79 @@ func (h *Handlers) StreamTaskEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Block until client disconnects.
 	<-ctx.Done()
+}
+
+// ApprovePermission handles POST /v1/sessions/{id}/permissions/{permissionId}.
+func (h *Handlers) ApprovePermission(w http.ResponseWriter, r *http.Request) {
+	sessionName := r.PathValue("id")
+	permissionID := r.PathValue("permissionId")
+
+	if sessionName == "" {
+		writeError(w, http.StatusBadRequest, "session id is required")
+		return
+	}
+	if permissionID == "" {
+		writeError(w, http.StatusBadRequest, "permission id is required")
+		return
+	}
+
+	var req PermissionDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.Decision != "allow" && req.Decision != "deny" {
+		writeError(w, http.StatusBadRequest, "decision must be 'allow' or 'deny'")
+		return
+	}
+
+	// Look up the session to verify it exists and is waiting for approval.
+	var session factoryv1alpha1.Session
+	key := types.NamespacedName{Name: sessionName, Namespace: h.namespace}
+	if err := h.client.Get(r.Context(), key, &session); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("getting session: %v", err))
+		return
+	}
+
+	if session.Status.Phase != factoryv1alpha1.SessionPhaseWaitingForApproval {
+		writeError(w, http.StatusConflict, fmt.Sprintf("session is not waiting for approval (phase: %s)", session.Status.Phase))
+		return
+	}
+
+	if session.Status.PendingApproval == nil || session.Status.PendingApproval.ID != permissionID {
+		writeError(w, http.StatusNotFound, "permission request not found")
+		return
+	}
+
+	if h.permissionPublisher == nil {
+		writeError(w, http.StatusServiceUnavailable, "permission publishing not available")
+		return
+	}
+
+	// Publish the decision to the NATS reply subject.
+	replySubject := fmt.Sprintf("permissions.%s", permissionID)
+	decision := PermissionDecisionResponse{
+		PermissionID: permissionID,
+		Decision:     req.Decision,
+		Remember:     req.Remember,
+		RespondedBy:  "api",
+	}
+	data, err := json.Marshal(decision)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encoding decision")
+		return
+	}
+
+	if err := h.permissionPublisher.Publish(replySubject, data); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("publishing decision: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, decision)
 }
 
 // ListPools handles GET /v1/pools.

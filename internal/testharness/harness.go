@@ -204,6 +204,7 @@ func (h *Harness) startAPIServer() {
 
 	subscriber := &natsSubscriberAdapter{sub: h.subscriber}
 	handlers := apiserver.NewHandlers(h.k8sClient, subscriber, h.logger, h.namespace)
+	handlers.SetPermissionPublisher(&natsPermissionPublisher{conn: h.natsConn})
 	srv := apiserver.NewServer(handlers, ":0", h.logger)
 	h.apiHTTP = httptest.NewServer(srv.Handler())
 }
@@ -263,6 +264,15 @@ type natsSubscriberAdapter struct {
 
 func (a *natsSubscriberAdapter) SubscribeSession(ctx context.Context, namespace, sessionID string, handler func(events.Event)) (apiserver.Subscription, error) {
 	return a.sub.SubscribeSession(ctx, namespace, sessionID, handler)
+}
+
+// natsPermissionPublisher adapts *nats.Conn to apiserver.PermissionPublisher.
+type natsPermissionPublisher struct {
+	conn *nats.Conn
+}
+
+func (p *natsPermissionPublisher) Publish(subject string, data []byte) error {
+	return p.conn.Publish(subject, data)
 }
 
 // controllerSubscriberAdapter adapts events.Subscriber to controller.EventSubscriber.
