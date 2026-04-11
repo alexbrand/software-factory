@@ -51,11 +51,11 @@ build: ## Build all binaries
 
 .PHONY: test
 test: ## Run unit tests
-	go test ./... -race
+	go test -p 1 ./... -race
 
 .PHONY: test-verbose
 test-verbose: ## Run unit tests with verbose output
-	go test ./... -race -v -coverprofile=coverage.out
+	go test -p 1 ./... -race -v -coverprofile=coverage.out
 
 ##@ Lint
 

@@ -34,5 +34,10 @@ go.work.sum
 # Build output
 bin/
 
+# Development and testing artifacts
+logs/
+kubectl
+sandbox-agent/
+
 # Local Claude Code settings
 .claude/settings.local.json
