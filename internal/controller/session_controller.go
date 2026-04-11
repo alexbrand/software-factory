@@ -91,8 +91,8 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.reconcileActive(ctx, &session)
 	case factoryv1alpha1.SessionPhaseWaitingForApproval:
 		// Permission events are handled by the NATS watcher goroutine.
-		// Requeue to keep health-checking the bridge.
-		return ctrl.Result{RequeueAfter: sessionHealthCheckInterval}, nil
+		// Check for timeout as a fallback.
+		return r.reconcileActive(ctx, &session)
 	case factoryv1alpha1.SessionPhaseCompleted, factoryv1alpha1.SessionPhaseFailed, factoryv1alpha1.SessionPhaseCancelled:
 		return ctrl.Result{}, nil
 	default:
@@ -148,9 +148,9 @@ func (r *SessionReconciler) reconcilePending(ctx context.Context, session *facto
 		Namespace: session.Namespace,
 	})
 
-	// Start a NATS watcher for permission events if subscriber is available.
+	// Start a NATS watcher for session lifecycle events.
 	if r.EventSubscriber != nil {
-		go r.watchPermissionEvents(session.Namespace, session.Name, bridgeSessionID)
+		go r.watchSessionEvents(session.Namespace, session.Name, bridgeSessionID)
 	}
 
 	return ctrl.Result{RequeueAfter: sessionHealthCheckInterval}, nil
@@ -171,9 +171,9 @@ func (r *SessionReconciler) getPermissionMode(ctx context.Context, session *fact
 	return ""
 }
 
-// watchPermissionEvents subscribes to NATS events for a session and updates
-// the Session CR when permission events arrive.
-func (r *SessionReconciler) watchPermissionEvents(namespace, sessionName, bridgeSessionID string) {
+// watchSessionEvents subscribes to NATS lifecycle events for a session and updates
+// the Session CR on permission requests, completion, and failure.
+func (r *SessionReconciler) watchSessionEvents(namespace, sessionName, bridgeSessionID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -183,7 +183,11 @@ func (r *SessionReconciler) watchPermissionEvents(namespace, sessionName, bridge
 			r.handlePermissionRequested(namespace, sessionName, ev)
 		case events.EventPermissionResponded:
 			r.handlePermissionResponded(namespace, sessionName)
-		case events.EventSessionCompleted, events.EventSessionFailed:
+		case events.EventSessionCompleted:
+			r.handleSessionCompleted(namespace, sessionName, ev)
+			cancel()
+		case events.EventSessionFailed:
+			r.handleSessionFailed(namespace, sessionName, ev)
 			cancel()
 		}
 	})
@@ -232,20 +236,97 @@ func (r *SessionReconciler) handlePermissionResponded(namespace, sessionName str
 	_ = r.Status().Update(ctx, &session)
 }
 
+// handleSessionCompleted updates the Session CR to Completed with metadata.
+func (r *SessionReconciler) handleSessionCompleted(namespace, sessionName string, ev events.Event) {
+	var data events.SessionCompletedData
+	_ = json.Unmarshal(ev.Data, &data)
+
+	ctx := context.Background()
+	var session factoryv1alpha1.Session
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sessionName}, &session); err != nil {
+		return
+	}
+
+	// Skip if already in a terminal phase (avoid overwriting).
+	if session.Status.Phase == factoryv1alpha1.SessionPhaseCompleted ||
+		session.Status.Phase == factoryv1alpha1.SessionPhaseFailed ||
+		session.Status.Phase == factoryv1alpha1.SessionPhaseCancelled {
+		return
+	}
+
+	now := metav1.Now()
+	session.Status.Phase = factoryv1alpha1.SessionPhaseCompleted
+	session.Status.CompletedAt = &now
+	if data.InputTokens > 0 || data.OutputTokens > 0 {
+		session.Status.TokenUsage = &factoryv1alpha1.TokenUsage{
+			Input:  data.InputTokens,
+			Output: data.OutputTokens,
+		}
+		if data.Cost != "" {
+			session.Status.TokenUsage.Cost = &data.Cost
+		}
+	}
+	_ = r.Status().Update(ctx, &session)
+}
+
+// handleSessionFailed updates the Session CR to Failed with failure reason.
+func (r *SessionReconciler) handleSessionFailed(namespace, sessionName string, ev events.Event) {
+	var data events.SessionFailedData
+	_ = json.Unmarshal(ev.Data, &data)
+
+	ctx := context.Background()
+	var session factoryv1alpha1.Session
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sessionName}, &session); err != nil {
+		return
+	}
+
+	// Skip if already in a terminal phase.
+	if session.Status.Phase == factoryv1alpha1.SessionPhaseCompleted ||
+		session.Status.Phase == factoryv1alpha1.SessionPhaseFailed ||
+		session.Status.Phase == factoryv1alpha1.SessionPhaseCancelled {
+		return
+	}
+
+	now := metav1.Now()
+	session.Status.Phase = factoryv1alpha1.SessionPhaseFailed
+	session.Status.CompletedAt = &now
+	session.Status.FailureReason = factoryv1alpha1.FailureReasonAgentError
+	_ = r.Status().Update(ctx, &session)
+}
+
+const defaultSessionTimeout = 1 * time.Hour
+
 func (r *SessionReconciler) reconcileActive(ctx context.Context, session *factoryv1alpha1.Session) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// Check for timeout (fallback — primary detection is via NATS events).
+	if r.isSessionTimedOut(session) {
+		now := metav1.Now()
+		session.Status.Phase = factoryv1alpha1.SessionPhaseFailed
+		session.Status.CompletedAt = &now
+		session.Status.FailureReason = factoryv1alpha1.FailureReasonTimeout
+		if err := r.Status().Update(ctx, session); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating session to Failed (timeout): %w", err)
+		}
+		r.publishEvent(ctx, session, events.EventSessionFailed, events.SessionFailedData{
+			Reason: "session timed out",
+		})
+		return ctrl.Result{}, nil
+	}
+
+	// Check if the bridge is still reachable.
 	bridgeURL, err := r.getBridgeEndpoint(ctx, session)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting bridge endpoint: %w", err)
 	}
 	if bridgeURL == "" {
-		// Pod gone while session active — mark as failed.
+		// Pod gone while session active — bridge lost.
 		now := metav1.Now()
 		session.Status.Phase = factoryv1alpha1.SessionPhaseFailed
 		session.Status.CompletedAt = &now
+		session.Status.FailureReason = factoryv1alpha1.FailureReasonBridgeLost
 		if err := r.Status().Update(ctx, session); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating session to Failed (pod gone): %w", err)
+			return ctrl.Result{}, fmt.Errorf("updating session to Failed (bridge lost): %w", err)
 		}
 		r.publishEvent(ctx, session, events.EventSessionFailed, events.SessionFailedData{
 			Reason: "sandbox pod disappeared",
@@ -253,29 +334,30 @@ func (r *SessionReconciler) reconcileActive(ctx context.Context, session *factor
 		return ctrl.Result{}, nil
 	}
 
+	// Health check — verify the bridge is responding.
 	bridgeClient := r.newBridgeClient(bridgeURL)
-
-	health, err := bridgeClient.GetHealth(ctx)
+	_, err = bridgeClient.GetHealth(ctx)
 	if err != nil {
 		logger.Error(err, "bridge health check failed")
-		// Don't fail immediately — bridge might be temporarily unreachable.
-		return ctrl.Result{RequeueAfter: sessionHealthCheckInterval}, nil
 	}
 
-	if health.ActiveSessions == 0 {
-		// Session has completed on the bridge side.
-		now := metav1.Now()
-		session.Status.Phase = factoryv1alpha1.SessionPhaseCompleted
-		session.Status.CompletedAt = &now
-		if err := r.Status().Update(ctx, session); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating session to Completed: %w", err)
-		}
-		r.publishEvent(ctx, session, events.EventSessionCompleted, events.SessionCompletedData{})
-		return ctrl.Result{}, nil
-	}
-
-	// Session still running, check again later.
+	// Session completion is detected via NATS events (watchSessionEvents goroutine).
+	// This reconciliation loop serves as a fallback for timeout and bridge-lost detection.
 	return ctrl.Result{RequeueAfter: sessionHealthCheckInterval}, nil
+}
+
+// isSessionTimedOut checks if the session has exceeded its configured timeout.
+func (r *SessionReconciler) isSessionTimedOut(session *factoryv1alpha1.Session) bool {
+	if session.Status.StartedAt == nil {
+		return false
+	}
+
+	timeout := defaultSessionTimeout
+	if session.Spec.Timeout != nil {
+		timeout = session.Spec.Timeout.Duration
+	}
+
+	return time.Since(session.Status.StartedAt.Time) > timeout
 }
 
 func (r *SessionReconciler) handleDeletion(ctx context.Context, session *factoryv1alpha1.Session) (ctrl.Result, error) {
