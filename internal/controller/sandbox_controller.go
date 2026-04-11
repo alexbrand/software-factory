@@ -600,9 +600,11 @@ func (r *SandboxReconciler) buildPod(sandbox *factoryv1alpha1.Sandbox, pool *fac
 		}
 	}
 
-	// Inject credential env vars into bridge container
+	// Inject credential env vars into both bridge and SDK containers.
+	// The bridge needs them for the credential proxy; the SDK container
+	// needs them because the agent process requires API keys directly.
 	for _, cred := range agentConfig.Spec.Credentials {
-		bridgeContainer.Env = append(bridgeContainer.Env, corev1.EnvVar{
+		envVar := corev1.EnvVar{
 			Name: cred.Name,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
@@ -610,7 +612,9 @@ func (r *SandboxReconciler) buildPod(sandbox *factoryv1alpha1.Sandbox, pool *fac
 					Key:                  cred.SecretRef.Key,
 				},
 			},
-		})
+		}
+		bridgeContainer.Env = append(bridgeContainer.Env, envVar)
+		sdkContainer.Env = append(sdkContainer.Env, envVar)
 	}
 
 	return &corev1.Pod{
