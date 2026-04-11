@@ -232,7 +232,7 @@ func TestSessionReconcile(t *testing.T) {
 			wantRequeue:  true,
 		},
 		{
-			name: "active session completes when no active sessions on bridge",
+			name: "active session requeues when bridge healthy (completion via NATS events)",
 			session: &factoryv1alpha1.Session{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-session",
@@ -265,9 +265,8 @@ func TestSessionReconcile(t *testing.T) {
 					ActiveSessions: 0,
 				},
 			},
-			wantPhase:      factoryv1alpha1.SessionPhaseCompleted,
-			wantRequeue:    false,
-			wantEventTypes: []events.EventType{events.EventSessionCompleted},
+			wantPhase:   factoryv1alpha1.SessionPhaseActive,
+			wantRequeue: true,
 		},
 		{
 			name: "active session stays active when sessions still running",

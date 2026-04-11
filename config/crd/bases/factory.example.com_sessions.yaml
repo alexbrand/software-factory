@@ -68,6 +68,11 @@ spec:
                 required:
                 - name
                 type: object
+              timeout:
+                description: |-
+                  Timeout is the maximum duration for this session.
+                  Inherited from the Task's spec.timeout. Default: 1h.
+                type: string
             required:
             - agentType
             - prompt
@@ -141,6 +146,15 @@ spec:
               eventStreamSubject:
                 description: EventStreamSubject is the NATS subject for this session's
                   event stream.
+                type: string
+              failureReason:
+                description: |-
+                  FailureReason indicates why the session failed.
+                  Set only when Phase is Failed.
+                enum:
+                - AgentError
+                - Timeout
+                - BridgeLost
                 type: string
               pendingApproval:
                 description: |-

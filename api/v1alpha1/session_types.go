@@ -33,6 +33,21 @@ type PendingApproval struct {
 	RequestedAt metav1.Time `json:"requestedAt"`
 }
 
+// FailureReason indicates why a session entered the Failed phase.
+// +kubebuilder:validation:Enum=AgentError;Timeout;BridgeLost
+type FailureReason string
+
+const (
+	// FailureReasonAgentError means the agent reported an error.
+	FailureReasonAgentError FailureReason = "AgentError"
+
+	// FailureReasonTimeout means the session exceeded its spec.timeout.
+	FailureReasonTimeout FailureReason = "Timeout"
+
+	// FailureReasonBridgeLost means the bridge became unreachable.
+	FailureReasonBridgeLost FailureReason = "BridgeLost"
+)
+
 // SessionSpec defines the desired state of a Session.
 type SessionSpec struct {
 	// SandboxRef references the sandbox this session runs in.
@@ -51,6 +66,11 @@ type SessionSpec struct {
 	// ContextFiles is a list of file paths to provide as context.
 	// +optional
 	ContextFiles []string `json:"contextFiles,omitempty"`
+
+	// Timeout is the maximum duration for this session.
+	// Inherited from the Task's spec.timeout. Default: 1h.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
 }
 
 // SessionStatus defines the observed state of a Session.
@@ -66,6 +86,11 @@ type SessionStatus struct {
 	// CompletedAt is the time the session completed.
 	// +optional
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+
+	// FailureReason indicates why the session failed.
+	// Set only when Phase is Failed.
+	// +optional
+	FailureReason FailureReason `json:"failureReason,omitempty"`
 
 	// EventStreamSubject is the NATS subject for this session's event stream.
 	// +optional
