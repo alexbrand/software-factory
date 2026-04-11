@@ -335,7 +335,9 @@ status:
   phase: Active             # Pending | Active | WaitingForApproval | Completed | Failed | Cancelled
   acpServerID: acp-abc123   # SDK ACP server identifier
   startedAt: "2026-03-27T10:15:00Z"
+  completedAt: null          # Set when phase reaches Completed, Failed, or Cancelled
   lastEventAt: "2026-03-27T10:30:00Z"
+  failureReason: ""          # AgentError | Timeout | BridgeLost (set only when phase is Failed)
 
   # Present only when phase is WaitingForApproval
   pendingApproval:
@@ -365,10 +367,51 @@ status:
 | `Active` | Agent is executing, events are streaming |
 | `WaitingForApproval` | Agent blocked on a permission request (only when `permissionMode: requireApproval`) |
 | `Completed` | Agent finished successfully |
-| `Failed` | Agent errored or timed out |
-| `Cancelled` | Session was cancelled by the user or workflow controller |
+| `Failed` | Agent errored or timed out (see `failureReason`) |
+| `Cancelled` | Session was deliberately cancelled by a user or workflow controller |
 
 The `WaitingForApproval` phase is only reachable when the AgentConfig's `permissionMode` is `requireApproval`. In `bypass` mode, the agent never emits permission requests. In `autoApprove` mode, the bridge responds immediately and the session stays `Active`.
+
+#### Session Completion Lifecycle
+
+Session completion is **event-driven**. The signal path:
+
+1. The agent finishes (or errors). The SDK closes the SSE stream.
+2. The bridge detects the SSE stream EOF and publishes `session.completed` or `session.failed` to NATS with metadata (token usage, duration).
+3. The Session Controller's NATS lifecycle watcher receives the event and updates the Session CR: phase → `Completed` or `Failed`, populates `status.completedAt` and `status.tokenUsage`.
+4. The Task Controller reads the updated Session CR and propagates the result to the Task CR.
+5. The Workflow Controller advances the DAG.
+
+**Failure reasons:** When a session enters the `Failed` phase, `status.failureReason` indicates the cause:
+
+| Reason | Description |
+|--------|-------------|
+| `AgentError` | The agent reported an error (SDK sent `session.failed` lifecycle event) |
+| `Timeout` | The session exceeded its `spec.timeout` duration |
+| `BridgeLost` | The bridge became unreachable while the session was active |
+
+The `Cancelled` phase represents deliberate cancellation by a user or the workflow controller.
+
+**Timeout enforcement:** Session timeouts are enforced at two levels:
+
+- **Bridge-side (primary):** The bridge starts a timer when the session begins. If `spec.timeout` expires, the bridge cancels the SDK session (sends `DELETE /v1/acp/{id}`), publishes `session.failed` with reason `Timeout`, and closes the SSE stream.
+- **Controller-side (fallback):** The Session Controller checks `startedAt + timeout` on each reconciliation. If the deadline has passed and the session is still `Active`, the controller marks it `Failed` with reason `Timeout`. This covers the case where the bridge is unresponsive and the NATS event never arrives.
+
+The `spec.timeout` value is set by the Task Controller when creating the Session CR, copied from the Task's `spec.timeout`. The system default is 1 hour.
+
+**Metadata capture at completion:**
+
+```yaml
+status:
+  phase: Completed
+  completedAt: "2026-03-27T11:15:00Z"
+  tokenUsage:
+    input: 15000
+    output: 8000
+    cost: "0.42"
+```
+
+Token usage is accumulated from `token.usage` events during the session. The bridge maintains running totals and includes them in the `session.completed` event payload. The Session Controller writes the totals to `status.tokenUsage`.
 
 #### Permission Request Lifecycle
 
@@ -379,7 +422,7 @@ When `permissionMode: requireApproval`:
 3. The bridge publishes a lifecycle event: `session.permission_requested`.
 4. The Session Controller updates the Session CR: phase → `WaitingForApproval`, populates `status.pendingApproval`.
 5. The Task Controller propagates the phase to the Task CR: phase → `WaitingForApproval`.
-6. The API server streams the permission details to external clients via SSE (sourced from NATS, not the CR).
+6. The API server streams the permission details to external clients via SSE (sourced from NATS).
 
 **Approval response:**
 
@@ -390,7 +433,7 @@ When `permissionMode: requireApproval`:
 5. The Session Controller updates the Session CR: phase → `Active`, clears `status.pendingApproval`.
 6. The Task Controller propagates the phase back to `Running`.
 
-**Design principle:** Only summary data (`toolName`, `title`, `requestedAt`) is stored in etcd via the Session CR. Full permission request payloads (tool arguments, context, rendered diffs) flow through NATS and are served via SSE. This keeps etcd writes low-frequency — one write on request, one on response.
+**Design principle:** Summary data (`toolName`, `title`, `requestedAt`) is stored in etcd via the Session CR. Full permission request payloads (tool arguments, context, rendered diffs) flow through NATS and are served via SSE. This keeps etcd writes to one per state transition.
 
 ## Operator Behaviors
 
@@ -430,17 +473,21 @@ When `permissionMode: requireApproval`:
 
 ### Session Controller
 
-1. **On Session create**: Connect to the bridge sidecar endpoint in the sandbox pod. Send the prompt. Begin streaming events to NATS.
+1. **On Session create**: Connect to the bridge sidecar endpoint in the sandbox pod. Send the prompt. Start a NATS lifecycle event watcher for this session.
 
-2. **On event received**: Publish to NATS stream `sessions.<session-id>`. Update Session CR status with latest event summary.
+2. **On `session.started` lifecycle event**: Update Session CR phase to `Active`, set `status.startedAt`.
 
 3. **On `session.permission_requested` lifecycle event** (only when `permissionMode: requireApproval`): Set Session CR phase to `WaitingForApproval`. Populate `status.pendingApproval` with summary fields (`id`, `toolName`, `title`, `requestedAt`). This is a single etcd write — the full request payload stays in NATS.
 
 4. **On `session.permission_responded` lifecycle event**: Clear `status.pendingApproval`. Set Session CR phase back to `Active`.
 
-5. **On session complete**: Set Session CR status to final state. Record token usage and cost metadata.
+5. **On `session.completed` lifecycle event**: Set Session CR phase to `Completed`. Record `status.completedAt` and `status.tokenUsage` from the event payload.
 
-**Important:** The Session Controller subscribes only to **lifecycle events** (started, completed, failed, permission_requested, permission_responded) — not the high-frequency tool call and output events. This keeps etcd write volume bounded by session state transitions, not agent activity.
+6. **On `session.failed` lifecycle event**: Set Session CR phase to `Failed`. Record `status.completedAt`, `status.failureReason` (from event payload: `AgentError`, `Timeout`, or `BridgeLost`), and `status.tokenUsage`.
+
+7. **Timeout fallback** (on periodic reconciliation): If the session is `Active` or `WaitingForApproval` and `startedAt + spec.timeout` has passed, set phase to `Failed` with `failureReason: Timeout`. This catches cases where the bridge is unresponsive and no NATS event arrives.
+
+**Important:** The Session Controller subscribes to **lifecycle events only** (started, completed, failed, permission_requested, permission_responded). High-frequency events (tool calls, shell output) are consumed by the event store, OTel exporter, and API streamer. This keeps etcd write volume bounded by session state transitions.
 
 ## API Server
 

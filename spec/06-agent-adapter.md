@@ -345,6 +345,38 @@ Session Controller                Bridge Sidecar              Sandbox Agent SDK
       │  Update Session CR status      │                              │
 ```
 
+### Session Completion Flow
+
+```
+Session Controller         NATS          Bridge Sidecar          SDK
+      │                     │                  │                   │
+      │                     │                  │  SSE stream EOF   │
+      │                     │                  │◄──────────────────┤
+      │                     │                  │  (agent finished) │
+      │                     │  session.completed                   │
+      │                     │  {tokenUsage, duration}              │
+      │                     │◄─────────────────┤                   │
+      │  lifecycle event    │                  │                   │
+      │◄────────────────────┤                  │                   │
+      │  Update Session CR: │                  │                   │
+      │  phase=Completed    │                  │                   │
+      │  tokenUsage=...     │                  │                   │
+      │                     │                  │                   │
+```
+
+**Completion detection in the bridge:**
+
+1. The bridge's `streamEvents` goroutine reads SSE events from the SDK via `StreamACPEvents`. When the agent finishes, the SDK closes the SSE connection. The channel returned by `StreamACPEvents` closes, and `streamEvents` exits.
+2. Before exiting, the bridge publishes a `session.completed` event to NATS with accumulated token usage from any `token.usage` events received during the session.
+3. The bridge removes the session from its active session map. The `/healthz` endpoint reflects the updated count.
+
+**Failure detection in the bridge:**
+
+- If the SDK SSE stream emits a `session.failed` event, the bridge publishes `session.failed` to NATS with the error reason from the event payload, then removes the session.
+- If the bridge detects that the session has exceeded its timeout, it cancels the SDK session (sends `DELETE /v1/acp/{id}`), publishes `session.failed` with `failureReason: Timeout`, and removes the session.
+
+**The Session Controller uses NATS lifecycle events as the primary completion signal.** The `/healthz` endpoint serves as a secondary signal, covering cases where NATS is unavailable or the event was missed.
+
 ### Permission Request Flow (requireApproval mode)
 
 ```
