@@ -30,10 +30,13 @@ NATS JetStream
 Events are published to NATS JetStream with subject-based routing:
 
 ```
-events.{tenant}.sessions.{session-id}    # Per-session events
-events.{tenant}.tasks.{task-id}          # Task lifecycle events
-events.{tenant}.workflows.{workflow-id}  # Workflow lifecycle events
+events.{tenant}.sessions.{session-id}           # Per-session events (all types)
+events.{tenant}.tasks.{task-id}                 # Task lifecycle events
+events.{tenant}.workflows.{workflow-id}         # Workflow lifecycle events
+permissions.{session-id}.{permission-id}        # Permission approval reply subjects
 ```
+
+The `permissions.*` subjects use NATS request/reply for synchronous approval routing. The bridge publishes a permission request event to the session subject and subscribes to the corresponding `permissions.*` reply subject. The API server publishes decisions to the reply subject when an external client responds. These subjects are ephemeral — they exist only while a permission request is pending.
 
 Stream configuration:
 - **Retention**: Limits-based (max age: 30 days, max bytes: configurable per tenant)
@@ -45,11 +48,13 @@ Stream configuration:
 
 | Consumer | Purpose | Delivery |
 |----------|---------|----------|
-| `session-controller` | Updates Session CR status | Queue group (load-balanced) |
+| `session-controller` | Updates Session CR status (lifecycle events only) | Queue group (load-balanced) |
 | `event-store` | Persists events to long-term storage | Single consumer |
 | `otel-exporter` | Exports metrics and traces to OTel Collector | Queue group |
 | `webhook-dispatcher` | Fires external webhooks on key events | Queue group |
 | `api-streamer` | Serves SSE to API clients | Per-subscription |
+
+The `session-controller` consumer filters for lifecycle event types only: `session.started`, `session.completed`, `session.failed`, `session.permission_requested`, `session.permission_responded`. High-frequency events (`tool.call`, `tool.result`, `shell.exec`, etc.) are consumed by the other groups but **not** by the session controller — this keeps etcd writes bounded by state transitions, not agent activity.
 
 ## Metrics
 
@@ -83,6 +88,14 @@ All metrics are exported via OpenTelemetry and scraped by Prometheus.
 | `factory_tool_duration_seconds` | Histogram | agent_type, tool | Tool execution time |
 | `factory_tool_errors_total` | Counter | agent_type, tool | Failed tool invocations |
 | `factory_agent_errors_total` | Counter | agent_type, error_type | Agent-level errors |
+
+### Permission Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `factory_permission_requests_total` | Counter | agent_type, tool, decision | Permission requests by outcome (allow/deny/timeout) |
+| `factory_permission_latency_seconds` | Histogram | agent_type, tool | Time from permission request to response |
+| `factory_permission_auto_approved_total` | Counter | agent_type, tool | Permissions auto-approved by the bridge (autoApprove mode) |
 
 ## Distributed Tracing
 
@@ -216,6 +229,7 @@ spec:
     - workflow.completed
     - workflow.failed
     - task.failed
+    - session.permission_requested   # Notify when an agent needs approval
   endpoint: https://hooks.slack.com/services/...
   secret:
     secretRef:
