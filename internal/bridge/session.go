@@ -38,6 +38,10 @@ type StartSessionConfig struct {
 	ContextFiles   []ContextFile
 	WorkDir        string
 	PermissionMode string
+	// OnPromptError is called when the prompt RPC fails. This allows the
+	// bridge server to publish a session.failed event on prompt errors
+	// (e.g., invalid API key) instead of silently hanging.
+	OnPromptError func(serverID string, err error)
 }
 
 // ContextFile represents a file to write to the sandbox before starting the session.
@@ -87,11 +91,13 @@ func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfi
 
 	// Send the prompt in a goroutine. The ACP session/prompt RPC blocks until
 	// the agent finishes, which can take minutes. We return immediately so the
-	// bridge HTTP handler doesn't time out. Prompt errors are logged and will
-	// surface as a session timeout to the task controller.
+	// bridge HTTP handler doesn't time out.
 	go func() {
 		if err := m.sdk.SendACPMessage(context.Background(), serverID, cfg.Prompt); err != nil {
 			m.logger.Error("failed to send prompt", "serverID", serverID, "error", err)
+			if cfg.OnPromptError != nil {
+				cfg.OnPromptError(serverID, err)
+			}
 		}
 	}()
 

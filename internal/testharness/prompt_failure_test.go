@@ -12,10 +12,14 @@ import (
 	"github.com/alexbrand/software-factory/internal/testharness"
 )
 
-// TestPromptFailure_PropagatesSessionFailed tests that when the agent prompt
-// RPC fails (e.g., invalid API key), the session moves to Failed with
-// failureReason=AgentError instead of hanging in Active until timeout.
-func TestPromptFailure_PropagatesSessionFailed(t *testing.T) {
+// TestPromptFailure tests the user experience when the agent fails at startup
+// (e.g., invalid API key). The user should see the task fail quickly with a
+// clear reason — not hang in Running for an hour.
+//
+// This test exercises the full signal path:
+//   SDK returns error → bridge publishes session.failed → controller updates
+//   Session CR → task controller reads session phase → Task CR moves to Failed
+func TestPromptFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -34,7 +38,7 @@ func TestPromptFailure_PropagatesSessionFailed(t *testing.T) {
 		},
 	})
 
-	// Setup: AgentConfig + Pool + wait for sandbox.
+	// Setup: AgentConfig + Pool + wait for a ready sandbox with pod IP.
 	agentCfg := &factoryv1alpha1.AgentConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "claude", Namespace: "prompt-fail-test"},
 		Spec: factoryv1alpha1.AgentConfigSpec{
@@ -70,38 +74,73 @@ func TestPromptFailure_PropagatesSessionFailed(t *testing.T) {
 	})
 	h.SetPodIP(ctx, "prompt-fail-test", sb.Status.PodName, "10.0.0.5")
 
-	// Create session.
+	// Create a Task and Session directly (simulating the task controller's
+	// sandbox-claim → session-create flow). This avoids races with the sandbox
+	// controller in envtest while still testing the failure propagation path.
+	task := &factoryv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bad-key-task",
+			Namespace: "prompt-fail-test",
+		},
+		Spec: factoryv1alpha1.TaskSpec{
+			PoolRef: factoryv1alpha1.LocalObjectReference{Name: "prompt-fail-pool"},
+			Prompt:  "this will fail because the API key is invalid",
+		},
+	}
+	if err := h.K8sClient().Create(ctx, task); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	// Set task to Running with sandbox and session refs (as the task controller would).
+	now := metav1.Now()
+	task.Status.Phase = factoryv1alpha1.TaskPhaseRunning
+	task.Status.SandboxRef = &factoryv1alpha1.LocalObjectReference{Name: sb.Name}
+	task.Status.SessionRef = &factoryv1alpha1.LocalObjectReference{Name: "bad-key-session"}
+	task.Status.StartedAt = &now
+	task.Status.Attempts = 1
+	if err := h.K8sClient().Status().Update(ctx, task); err != nil {
+		t.Fatalf("updating task status: %v", err)
+	}
+
+	// Create the session (as the task controller would).
 	session := &factoryv1alpha1.Session{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "prompt-fail-session",
+			Name:      "bad-key-session",
 			Namespace: "prompt-fail-test",
 		},
 		Spec: factoryv1alpha1.SessionSpec{
 			SandboxRef: factoryv1alpha1.LocalObjectReference{Name: sb.Name},
 			AgentType:  "claude-code",
-			Prompt:     "this will fail",
+			Prompt:     "this will fail because the API key is invalid",
 		},
 	}
 	if err := h.K8sClient().Create(ctx, session); err != nil {
 		t.Fatalf("creating session: %v", err)
 	}
 
-	// The session should move to Failed quickly (not hang in Active for 1h).
-	t.Run("session enters Failed", func(t *testing.T) {
+	// === ASSERT: Session moves to Failed quickly (via NATS event from bridge) ===
+	t.Run("session fails with AgentError", func(t *testing.T) {
 		testharness.WaitFor(t, 15*time.Second, 500*time.Millisecond, func() bool {
 			var s factoryv1alpha1.Session
 			err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s)
 			return err == nil && s.Status.Phase == factoryv1alpha1.SessionPhaseFailed
 		})
-	})
 
-	t.Run("failureReason is AgentError", func(t *testing.T) {
 		var s factoryv1alpha1.Session
 		if err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s); err != nil {
 			t.Fatalf("getting session: %v", err)
 		}
 		if s.Status.FailureReason != factoryv1alpha1.FailureReasonAgentError {
-			t.Errorf("expected failureReason 'AgentError', got %q", s.Status.FailureReason)
+			t.Errorf("expected failureReason AgentError, got %q", s.Status.FailureReason)
 		}
+	})
+
+	// === ASSERT: Task propagates the failure (via task controller polling session) ===
+	t.Run("task fails via API", func(t *testing.T) {
+		api := h.APIClient()
+		testharness.WaitFor(t, 30*time.Second, 500*time.Millisecond, func() bool {
+			got, getErr := api.GetTask("bad-key-task")
+			return getErr == nil && got.Phase == "Failed"
+		})
 	})
 }
