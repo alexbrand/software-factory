@@ -9,6 +9,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/alexbrand/software-factory/pkg/events"
 )
 
 // Server exposes HTTP endpoints for the Session Controller to call.
@@ -103,6 +107,7 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		Prompt:         req.Prompt,
 		ContextFiles:   ctxFiles,
 		PermissionMode: req.PermissionMode,
+		OnPromptError:  s.makePromptErrorHandler(),
 	}
 
 	// Create a callback factory that wires up event forwarding and permission
@@ -151,6 +156,34 @@ func (s *Server) makeEventCallbackFactory(permissionMode string) EventCallbackFa
 				s.eventForwarder.ForwardEvent(context.Background(), serverID, event)
 			}
 		}
+	}
+}
+
+// makePromptErrorHandler returns a callback that publishes session.failed
+// when the prompt RPC fails (e.g., invalid API key, model error).
+func (s *Server) makePromptErrorHandler() func(serverID string, err error) {
+	return func(serverID string, promptErr error) {
+		if s.eventForwarder == nil || s.eventForwarder.publisher == nil {
+			return
+		}
+
+		dataBytes, _ := json.Marshal(events.SessionFailedData{
+			Reason: promptErr.Error(),
+		})
+
+		event := events.Event{
+			ID:        uuid.New().String(),
+			SessionID: serverID,
+			Timestamp: time.Now().UTC(),
+			Type:      events.EventSessionFailed,
+			Data:      dataBytes,
+		}
+
+		_ = s.eventForwarder.publisher.Publish(
+			context.Background(),
+			s.eventForwarder.namespace,
+			event,
+		)
 	}
 }
 

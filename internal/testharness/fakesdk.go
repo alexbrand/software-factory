@@ -47,9 +47,18 @@ type SessionBehavior struct {
 	// PromptDelay makes session/prompt block for this duration.
 	PromptDelay time.Duration
 
+	// PromptError, if non-nil, makes session/prompt return this JSON-RPC error.
+	PromptError *JSONRPCError
+
 	// Events are SSE-formatted strings pushed to the stream on session start.
 	// Each should be a complete SSE block, e.g. "event: message\ndata: {...}\n\n"
 	Events []string
+}
+
+// JSONRPCError represents a JSON-RPC error for fake responses.
+type JSONRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
 }
 
 // FakeSessionInfo exposes session state for test assertions.
@@ -291,6 +300,7 @@ func (f *FakeSDK) handleACPPost(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		sess := f.sessions[serverID]
 		delay := f.behavior.PromptDelay
+		promptErr := f.behavior.PromptError
 		if sess != nil && len(p.Prompt) > 0 {
 			sess.prompts = append(sess.prompts, p.Prompt[0].Text)
 		}
@@ -298,6 +308,16 @@ func (f *FakeSDK) handleACPPost(w http.ResponseWriter, r *http.Request) {
 
 		if delay > 0 {
 			time.Sleep(delay)
+		}
+
+		if promptErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0", ID: rpcReq.ID,
+				Error: &jsonRPCError{Code: promptErr.Code, Message: promptErr.Message},
+			})
+			return
 		}
 
 		writeRPCResult(w, rpcReq.ID, `{"stopReason":"end_turn"}`)
