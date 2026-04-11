@@ -33,10 +33,11 @@ func NewSessionManager(sdk *SDKClient, logger *slog.Logger) *SessionManager {
 
 // StartSessionConfig holds parameters for starting a session.
 type StartSessionConfig struct {
-	AgentType    string
-	Prompt       string
-	ContextFiles []ContextFile
-	WorkDir      string
+	AgentType      string
+	Prompt         string
+	ContextFiles   []ContextFile
+	WorkDir        string
+	PermissionMode string
 }
 
 // ContextFile represents a file to write to the sandbox before starting the session.
@@ -45,9 +46,14 @@ type ContextFile struct {
 	Content string
 }
 
+// EventCallbackFactory creates an event callback for a given server ID.
+// This allows the callback to be created after the server ID is known.
+type EventCallbackFactory func(serverID string) func(SSEEvent)
+
 // StartSession creates a new ACP session, writes context files, sends the prompt,
 // and starts event forwarding. Returns the session ID.
-func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfig, onEvent func(SSEEvent)) (string, error) {
+// The makeCallback factory is called with the server ID to create the event callback.
+func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfig, makeCallback EventCallbackFactory) (string, error) {
 	// Write context files to sandbox filesystem.
 	for _, f := range cfg.ContextFiles {
 		if err := m.sdk.WriteFile(ctx, f.Path, f.Content); err != nil {
@@ -57,8 +63,9 @@ func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfi
 
 	// Create ACP session.
 	serverID, err := m.sdk.CreateACPSession(ctx, ACPConfig{
-		Agent:   cfg.AgentType,
-		WorkDir: cfg.WorkDir,
+		Agent:          cfg.AgentType,
+		WorkDir:        cfg.WorkDir,
+		PermissionMode: cfg.PermissionMode,
 	})
 	if err != nil {
 		return "", fmt.Errorf("creating ACP session: %w", err)
@@ -75,6 +82,7 @@ func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfi
 	}
 	m.mu.Unlock()
 
+	onEvent := makeCallback(serverID)
 	go m.streamEvents(eventCtx, serverID, onEvent)
 
 	// Send the prompt in a goroutine. The ACP session/prompt RPC blocks until

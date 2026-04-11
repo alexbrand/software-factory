@@ -43,12 +43,23 @@ type EventPublisher interface {
 	Publish(ctx context.Context, namespace string, event events.Event) error
 }
 
+// EventSubscriber defines the interface for subscribing to events.
+type EventSubscriber interface {
+	SubscribeSession(ctx context.Context, namespace, sessionID string, handler func(events.Event)) (EventSubscription, error)
+}
+
+// EventSubscription can be unsubscribed.
+type EventSubscription interface {
+	Unsubscribe() error
+}
+
 // SessionReconciler reconciles a Session object.
 type SessionReconciler struct {
 	client.Client
 	Scheme              *runtime.Scheme
 	BridgeClientFactory BridgeClientFactory
 	EventPublisher      EventPublisher
+	EventSubscriber     EventSubscriber
 }
 
 // +kubebuilder:rbac:groups=factory.example.com,resources=sessions,verbs=get;list;watch;create;update;patch;delete
@@ -78,6 +89,10 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.reconcilePending(ctx, &session)
 	case factoryv1alpha1.SessionPhaseActive:
 		return r.reconcileActive(ctx, &session)
+	case factoryv1alpha1.SessionPhaseWaitingForApproval:
+		// Permission events are handled by the NATS watcher goroutine.
+		// Requeue to keep health-checking the bridge.
+		return ctrl.Result{RequeueAfter: sessionHealthCheckInterval}, nil
 	case factoryv1alpha1.SessionPhaseCompleted, factoryv1alpha1.SessionPhaseFailed, factoryv1alpha1.SessionPhaseCancelled:
 		return ctrl.Result{}, nil
 	default:
@@ -99,13 +114,17 @@ func (r *SessionReconciler) reconcilePending(ctx context.Context, session *facto
 		return ctrl.Result{RequeueAfter: defaultRequeueDelay}, nil
 	}
 
+	// Look up the AgentConfig to get the permission mode.
+	permissionMode := r.getPermissionMode(ctx, session)
+
 	// Create a bridge client and start the session.
 	bridgeClient := r.newBridgeClient(bridgeURL)
 
 	cfg := bridge.SessionConfig{
-		AgentType:    session.Spec.AgentType,
-		Prompt:       session.Spec.Prompt,
-		ContextFiles: session.Spec.ContextFiles,
+		AgentType:      session.Spec.AgentType,
+		Prompt:         session.Spec.Prompt,
+		ContextFiles:   session.Spec.ContextFiles,
+		PermissionMode: permissionMode,
 	}
 
 	bridgeSessionID, err := bridgeClient.StartSession(ctx, cfg)
@@ -129,7 +148,88 @@ func (r *SessionReconciler) reconcilePending(ctx context.Context, session *facto
 		Namespace: session.Namespace,
 	})
 
+	// Start a NATS watcher for permission events if subscriber is available.
+	if r.EventSubscriber != nil {
+		go r.watchPermissionEvents(session.Namespace, session.Name, bridgeSessionID)
+	}
+
 	return ctrl.Result{RequeueAfter: sessionHealthCheckInterval}, nil
+}
+
+// getPermissionMode looks up the AgentConfig for the session's agent type
+// and returns the configured permission mode.
+func (r *SessionReconciler) getPermissionMode(ctx context.Context, session *factoryv1alpha1.Session) string {
+	var agentConfigs factoryv1alpha1.AgentConfigList
+	if err := r.List(ctx, &agentConfigs, client.InNamespace(session.Namespace)); err != nil {
+		return ""
+	}
+	for _, ac := range agentConfigs.Items {
+		if ac.Spec.AgentType == session.Spec.AgentType {
+			return string(ac.Spec.PermissionMode)
+		}
+	}
+	return ""
+}
+
+// watchPermissionEvents subscribes to NATS events for a session and updates
+// the Session CR when permission events arrive.
+func (r *SessionReconciler) watchPermissionEvents(namespace, sessionName, bridgeSessionID string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sub, err := r.EventSubscriber.SubscribeSession(ctx, namespace, bridgeSessionID, func(ev events.Event) {
+		switch ev.Type {
+		case events.EventPermissionRequested:
+			r.handlePermissionRequested(namespace, sessionName, ev)
+		case events.EventPermissionResponded:
+			r.handlePermissionResponded(namespace, sessionName)
+		case events.EventSessionCompleted, events.EventSessionFailed:
+			cancel()
+		}
+	})
+	if err != nil {
+		return
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	<-ctx.Done()
+}
+
+// handlePermissionRequested updates the Session CR to WaitingForApproval.
+func (r *SessionReconciler) handlePermissionRequested(namespace, sessionName string, ev events.Event) {
+	var data events.PermissionRequestData
+	if err := json.Unmarshal(ev.Data, &data); err != nil {
+		return
+	}
+
+	ctx := context.Background()
+	var session factoryv1alpha1.Session
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sessionName}, &session); err != nil {
+		return
+	}
+
+	now := metav1.Now()
+	session.Status.Phase = factoryv1alpha1.SessionPhaseWaitingForApproval
+	session.Status.PendingApproval = &factoryv1alpha1.PendingApproval{
+		ID:          data.PermissionID,
+		ToolName:    data.ToolName,
+		Title:       data.Title,
+		RequestedAt: now,
+	}
+	_ = r.Status().Update(ctx, &session)
+}
+
+// handlePermissionResponded clears the pending approval and sets phase back to Active.
+func (r *SessionReconciler) handlePermissionResponded(namespace, sessionName string) {
+	ctx := context.Background()
+	var session factoryv1alpha1.Session
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sessionName}, &session); err != nil {
+		return
+	}
+
+	session.Status.Phase = factoryv1alpha1.SessionPhaseActive
+	session.Status.PendingApproval = nil
+	_ = r.Status().Update(ctx, &session)
 }
 
 func (r *SessionReconciler) reconcileActive(ctx context.Context, session *factoryv1alpha1.Session) (ctrl.Result, error) {

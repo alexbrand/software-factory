@@ -275,6 +275,9 @@ func (f *FakeSDK) handleACPPost(w http.ResponseWriter, r *http.Request) {
 	case "session/set_config_option":
 		writeRPCResult(w, rpcReq.ID, `{}`)
 
+	case "session/respond_permission":
+		writeRPCResult(w, rpcReq.ID, `{}`)
+
 	case "session/prompt":
 		// Extract prompt text.
 		params, _ := json.Marshal(rpcReq.Params)

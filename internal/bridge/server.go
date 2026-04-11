@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 type Server struct {
 	sessionManager *SessionManager
 	eventForwarder *EventForwarder
+	permHandler    *PermissionHandler
 	logger         *slog.Logger
 	startTime      time.Time
 	httpServer     *http.Server
@@ -31,6 +33,11 @@ func NewServer(sm *SessionManager, ef *EventForwarder, logger *slog.Logger) *Ser
 		startTime:      time.Now(),
 		sdkHealthy:     true,
 	}
+}
+
+// SetPermissionHandler sets the permission handler for requireApproval mode.
+func (s *Server) SetPermissionHandler(ph *PermissionHandler) {
+	s.permHandler = ph
 }
 
 // SetSDKHealthy updates the SDK health state for the /healthz endpoint.
@@ -92,36 +99,59 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := StartSessionConfig{
-		AgentType:    req.AgentType,
-		Prompt:       req.Prompt,
-		ContextFiles: ctxFiles,
+		AgentType:      req.AgentType,
+		Prompt:         req.Prompt,
+		ContextFiles:   ctxFiles,
+		PermissionMode: req.PermissionMode,
 	}
 
-	onEvent := func(SSEEvent) {}
-	_ = s.eventForwarder // TODO: wire up event forwarding with actual session ID
+	// Create a callback factory that wires up event forwarding and permission
+	// handling once the server ID is known.
+	makeCallback := s.makeEventCallbackFactory(req.PermissionMode)
 
-	sessionID, err := s.sessionManager.StartSession(r.Context(), cfg, onEvent)
+	sessionID, err := s.sessionManager.StartSession(r.Context(), cfg, makeCallback)
 	if err != nil {
 		s.logger.Error("failed to start session", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to start session: %v", err)
 		return
 	}
 
-	// Now wire up real event forwarding with the actual session ID.
-	if s.eventForwarder != nil {
-		// Events are already flowing from StreamACPEvents. The onEvent callback
-		// above was a no-op placeholder. Future events will use the forwarder
-		// since we re-register in the session manager isn't needed — the goroutine
-		// is already running. For the bridge architecture, events are forwarded
-		// by the EventForwarder through its MakeEventCallback, but since we need
-		// the session ID first, we set a no-op and rely on session.go's goroutine.
-		// In practice, the session manager should use the forwarder callback.
-		_ = sessionID
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(SessionResponse{SessionID: sessionID})
+}
+
+// makeEventCallbackFactory returns a callback factory that creates a permission-aware
+// event callback for a given server ID.
+func (s *Server) makeEventCallbackFactory(permissionMode string) EventCallbackFactory {
+	return func(serverID string) func(SSEEvent) {
+		return func(event SSEEvent) {
+			// Check if this is a permission request.
+			if (permissionMode == "requireApproval" || permissionMode == "autoApprove") && s.permHandler != nil {
+				var rpc struct {
+					Method string          `json:"method"`
+					Params json.RawMessage `json:"params"`
+				}
+				if json.Unmarshal([]byte(event.Data), &rpc) == nil && rpc.Method == "session/request_permission" {
+					var params permissionParams
+					_ = json.Unmarshal(rpc.Params, &params)
+
+					if permissionMode == "autoApprove" {
+						s.permHandler.HandleAutoApprove(context.Background(), serverID, params)
+					} else {
+						// requireApproval: this blocks until approval is received.
+						s.permHandler.HandleRequireApproval(context.Background(), serverID, params)
+					}
+					return
+				}
+			}
+
+			// Normal event forwarding.
+			if s.eventForwarder != nil {
+				s.eventForwarder.ForwardEvent(context.Background(), serverID, event)
+			}
+		}
+	}
 }
 
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {

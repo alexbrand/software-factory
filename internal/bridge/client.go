@@ -22,6 +22,10 @@ type SessionConfig struct {
 
 	// ContextFiles is a list of file paths to provide as context.
 	ContextFiles []string `json:"contextFiles,omitempty"`
+
+	// PermissionMode controls how permission requests are handled.
+	// Values: "bypass" (default), "autoApprove", "requireApproval".
+	PermissionMode string `json:"permissionMode,omitempty"`
 }
 
 // SessionResponse is the response from the bridge when starting a session.
