@@ -55,6 +55,7 @@ func TestEventForwarderNormalize(t *testing.T) {
 		})
 		if event == nil {
 			t.Fatal("expected non-nil event")
+			return
 		}
 		if event.Type != events.EventAgentMessage {
 			t.Errorf("expected type %s, got %s", events.EventAgentMessage, event.Type)
@@ -83,6 +84,7 @@ func TestEventForwarderNormalize(t *testing.T) {
 		})
 		if event == nil {
 			t.Fatal("expected non-nil event")
+			return
 		}
 		if string(event.Data) != "{}" {
 			t.Errorf("expected empty JSON object, got %s", string(event.Data))
@@ -96,6 +98,7 @@ func TestEventForwarderNormalize(t *testing.T) {
 		})
 		if event == nil {
 			t.Fatal("expected non-nil event")
+			return
 		}
 		if event.ID == "" {
 			t.Error("expected generated ID")
@@ -139,6 +142,7 @@ func TestNormalizeEventPreservesData(t *testing.T) {
 
 	if event == nil {
 		t.Fatal("expected non-nil event")
+		return
 	}
 
 	// Verify data is preserved as-is.
