@@ -350,9 +350,15 @@ Session Controller                Bridge Sidecar              Sandbox Agent SDK
 ```
 Session Controller         NATS          Bridge Sidecar          SDK
       │                     │                  │                   │
-      │                     │                  │  SSE stream EOF   │
+      │                     │                  │  prompt RPC returns│
       │                     │                  │◄──────────────────┤
       │                     │                  │  (agent finished) │
+      │                     │                  │                   │
+      │                     │                  │  DELETE /v1/acp/{id}
+      │                     │                  ├──────────────────►│
+      │                     │                  │  SSE stream closes │
+      │                     │                  │◄──────────────────┤
+      │                     │                  │                   │
       │                     │  session.completed                   │
       │                     │  {tokenUsage, duration}              │
       │                     │◄─────────────────┤                   │
@@ -366,9 +372,14 @@ Session Controller         NATS          Bridge Sidecar          SDK
 
 **Completion detection in the bridge:**
 
-1. The bridge's `streamEvents` goroutine reads SSE events from the SDK via `StreamACPEvents`. When the agent finishes, the SDK closes the SSE connection. The channel returned by `StreamACPEvents` closes, and `streamEvents` exits.
-2. Before exiting, the bridge publishes a `session.completed` event to NATS with accumulated token usage from any `token.usage` events received during the session.
-3. The bridge removes the session from its active session map. The `/healthz` endpoint reflects the updated count.
+The ACP protocol keeps sessions open for follow-up messages — the SDK does not close the SSE stream when a prompt completes. The bridge actively drives session completion:
+
+1. The bridge sends the prompt via `session/prompt` JSON-RPC in a background goroutine. This blocks until the agent finishes.
+2. When the prompt returns successfully, the bridge closes the ACP session (`DELETE /v1/acp/{id}`). The SDK closes the SSE stream in response.
+3. The bridge publishes a `session.completed` event to NATS with token usage from the prompt response.
+4. The bridge removes the session from its active session map.
+
+If the prompt returns with an error, the bridge publishes `session.failed` instead and follows the same cleanup path.
 
 **Failure detection in the bridge:**
 
