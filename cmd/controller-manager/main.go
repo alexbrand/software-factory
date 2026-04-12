@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -12,7 +13,17 @@ import (
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
 	"github.com/alexbrand/software-factory/internal/controller"
+	"github.com/alexbrand/software-factory/pkg/events"
 )
+
+// subscriberAdapter adapts events.Subscriber to controller.EventSubscriber.
+type subscriberAdapter struct {
+	sub *events.Subscriber
+}
+
+func (a *subscriberAdapter) SubscribeSession(ctx context.Context, namespace, sessionID string, handler func(events.Event)) (controller.EventSubscription, error) {
+	return a.sub.SubscribeSession(ctx, namespace, sessionID, handler)
+}
 
 var (
 	scheme   = runtime.NewScheme()
@@ -69,9 +80,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Connect to NATS for session event publishing and subscribing.
+	var eventPublisher *events.Publisher
+	var eventSubscriber *events.Subscriber
+	natsURL := os.Getenv("NATS_URL")
+	if natsURL != "" {
+		opts := events.DefaultConnectOptions(natsURL)
+		opts.Name = "controller-manager"
+		conn, js, natsErr := events.Connect(opts)
+		if natsErr != nil {
+			setupLog.Info("NATS unavailable, session events disabled", "error", natsErr)
+		} else {
+			defer conn.Close()
+			eventPublisher = events.NewPublisher(js)
+			eventSubscriber = events.NewSubscriber(js)
+			setupLog.Info("connected to NATS", "url", natsURL)
+		}
+	}
+
 	if err := (&controller.SessionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		EventPublisher:  eventPublisher,
+		EventSubscriber: func() controller.EventSubscriber {
+			if eventSubscriber != nil {
+				return &subscriberAdapter{sub: eventSubscriber}
+			}
+			return nil
+		}(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Session")
 		os.Exit(1)

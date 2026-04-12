@@ -20,6 +20,13 @@ spec:
       containers:
         - name: manager
           image: software-factory-controller-manager:latest
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: NATS_URL
+              value: "nats://nats.$(NAMESPACE).svc.cluster.local:4222"
           ports:
             - containerPort: 8081
               name: health
