@@ -372,14 +372,23 @@ Session Controller         NATS          Bridge Sidecar          SDK
 
 **Completion detection in the bridge:**
 
-The ACP protocol keeps sessions open for follow-up messages — the SDK does not close the SSE stream when a prompt completes. The bridge actively drives session completion:
+The ACP protocol keeps sessions open for follow-up messages — the SDK does not close the SSE stream when a prompt completes. The bridge drives session completion differently depending on the session mode:
+
+**Task mode (single-shot):**
 
 1. The bridge sends the prompt via `session/prompt` JSON-RPC in a background goroutine. This blocks until the agent finishes.
-2. When the prompt returns successfully, the bridge closes the ACP session (`DELETE /v1/acp/{id}`). The SDK closes the SSE stream in response.
-3. The bridge publishes a `session.completed` event to NATS with token usage from the prompt response.
-4. The bridge removes the session from its active session map.
+2. When the prompt returns successfully, the bridge publishes `session.completed` to NATS and closes the ACP session (`DELETE /v1/acp/{id}`).
+3. The bridge removes the session from its active session map.
 
 If the prompt returns with an error, the bridge publishes `session.failed` instead and follows the same cleanup path.
+
+**Interactive mode (multi-turn):**
+
+1. The bridge sends the initial prompt (if provided) via `session/prompt`. When it returns, the session stays open — the bridge does **not** close the ACP session or publish `session.completed`.
+2. Follow-up messages arrive via `POST /sessions/{id}/messages` on the bridge HTTP API. Each message calls `session/prompt` again. The SSE stream stays open for the duration, streaming events for every turn.
+3. The session closes when:
+   - The API server sends a cancel request (`DELETE /sessions/{id}`) → bridge closes ACP session, publishes `session.completed`
+   - The idle timeout fires (no messages for `spec.timeout`) → bridge closes ACP session, publishes `session.failed` with `failureReason: Timeout`
 
 **Failure detection in the bridge:**
 
