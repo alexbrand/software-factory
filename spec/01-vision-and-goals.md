@@ -37,7 +37,10 @@ An organization submits a complex goal (feature specification, research brief, d
 A platform team builds domain-specific agents that use MCP tools to interact with internal systems (databases, APIs, dashboards). The orchestration system manages their lifecycle and provides sandboxed execution.
 
 ### UC3: Event-Triggered Agents
-Agents are triggered by external events (webhooks, schedules, CI signals) and run within the orchestration system to perform tasks autonomously. Examples: a coding agent responds to CI failures with fixes, a personal assistant agent processes incoming emails, or a monitoring agent triages alerts.
+Agents are triggered by external events (webhooks, schedules, CI signals) and run within the orchestration system to perform tasks autonomously. Examples: a coding agent responds to CI failures with fixes or a monitoring agent triages alerts.
+
+### UC5: Interactive Sessions
+A developer opens an interactive session with an agent in a persistent sandbox. They have a multi-turn conversation: asking the agent to explore code, make changes, review results, and iterate. The session stays open between messages, the agent retains context from previous turns, and the developer watches tool calls and outputs in real time via SSE. The session closes when the developer is done or the idle timeout fires.
 
 ### UC4: Batch Processing
 A large-scale migration or refactoring task is split across hundreds of repositories. The system schedules agents across the fleet, throttling concurrency to respect API rate limits and cluster resources.

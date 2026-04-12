@@ -307,7 +307,12 @@ The `WaitingForApproval` task phase is set when the underlying session enters `W
 
 ### Session
 
-A Session represents a single agent conversation within a sandbox. The Session Controller creates sessions when a Task is assigned to a sandbox and manages them through completion.
+A Session represents a single agent conversation within a sandbox. Sessions operate in one of two modes:
+
+- **`task` mode** (default): Created by the Task Controller. The session runs a single prompt and completes automatically when the agent finishes. Used for batch work and workflows.
+- **`interactive` mode**: Created directly by a user via the API. The session stays open for multi-turn conversation — the user sends messages, the agent responds, and the cycle repeats until the user closes the session or the idle timeout fires. Used for personal assistants, debugging, and exploratory work.
+
+Both modes use the same sandbox, bridge, event streaming, and permission infrastructure.
 
 ```yaml
 apiVersion: factory.example.com/v1alpha1
@@ -316,12 +321,12 @@ metadata:
   name: session-xyz789
   namespace: team-alpha
   labels:
-    factory.example.com/task: implement-handlers
     factory.example.com/sandbox: claude-code-pool-abc123
 spec:
   sandboxRef:
     name: claude-code-pool-abc123
-  taskRef:
+  mode: interactive              # task (default) | interactive
+  taskRef:                        # Present only in task mode
     name: implement-handlers
   prompt: |
     Implement the HTTP handlers based on the API spec.
@@ -329,7 +334,7 @@ spec:
     - path: /workspace/api-spec.yaml
       configMapRef:
         name: api-spec-artifact
-  timeout: 45m
+  timeout: 45m                    # Task mode: max session duration. Interactive mode: idle timeout.
 
 status:
   phase: Active             # Pending | Active | WaitingForApproval | Completed | Failed | Cancelled
@@ -364,23 +369,28 @@ status:
 | Phase | Description |
 |-------|-------------|
 | `Pending` | Session CR created, bridge not yet connected |
-| `Active` | Agent is executing, events are streaming |
+| `Active` | Agent is executing or awaiting input (interactive mode) |
 | `WaitingForApproval` | Agent blocked on a permission request (only when `permissionMode: requireApproval`) |
-| `Completed` | Agent finished successfully |
+| `Completed` | Session finished successfully |
 | `Failed` | Agent errored or timed out (see `failureReason`) |
 | `Cancelled` | Session was deliberately cancelled by a user or workflow controller |
 
-The `WaitingForApproval` phase is only reachable when the AgentConfig's `permissionMode` is `requireApproval`. In `bypass` mode, the agent never emits permission requests. In `autoApprove` mode, the bridge responds immediately and the session stays `Active`.
+In **task mode**, `Active` means the agent is working on the prompt. When the prompt completes, the session moves to `Completed`.
+
+In **interactive mode**, `Active` means the session is open for conversation. The agent processes each message and returns to `Active` awaiting the next message. The session stays `Active` until the user closes it (`DELETE /v1/sessions/{id}`), the idle timeout fires, or the session timeout expires. Between messages, `status.lastEventAt` tracks when the last interaction occurred — the idle timeout is measured from this timestamp.
+
+The `WaitingForApproval` phase is reachable in both modes when the AgentConfig's `permissionMode` is `requireApproval`.
 
 #### Session Completion Lifecycle
 
-Session completion is **event-driven**. The signal path:
+**Task mode:** Session completion is event-driven. The bridge sends the prompt, waits for the response, publishes `session.completed` to NATS, and closes the ACP session. The Session Controller updates the CR, the Task Controller propagates the result, and the Workflow Controller advances the DAG.
 
-1. The agent finishes (or errors). The SDK closes the SSE stream.
-2. The bridge detects the SSE stream EOF and publishes `session.completed` or `session.failed` to NATS with metadata (token usage, duration).
-3. The Session Controller's NATS lifecycle watcher receives the event and updates the Session CR: phase → `Completed` or `Failed`, populates `status.completedAt` and `status.tokenUsage`.
-4. The Task Controller reads the updated Session CR and propagates the result to the Task CR.
-5. The Workflow Controller advances the DAG.
+**Interactive mode:** The session stays open after each message. Completion happens when:
+- The user closes the session via `DELETE /v1/sessions/{id}` → phase moves to `Completed`
+- The idle timeout fires (no messages for `spec.timeout` duration) → phase moves to `Failed` with `failureReason: Timeout`
+- The session timeout expires → phase moves to `Failed` with `failureReason: Timeout`
+
+In both modes, the signal path for completion is:
 
 **Failure reasons:** When a session enters the `Failed` phase, `status.failureReason` indicates the cause:
 
@@ -473,7 +483,7 @@ When `permissionMode: requireApproval`:
 
 ### Session Controller
 
-1. **On Session create**: Connect to the bridge sidecar endpoint in the sandbox pod. Send the prompt. Start a NATS lifecycle event watcher for this session.
+1. **On Session create**: Connect to the bridge sidecar endpoint in the sandbox pod. In task mode, send the prompt. In interactive mode, send the prompt (if provided) or start the session without an initial message. Start a NATS lifecycle event watcher for this session.
 
 2. **On `session.started` lifecycle event**: Update Session CR phase to `Active`, set `status.startedAt`.
 
@@ -504,8 +514,12 @@ The API server is a Go service that provides a client-facing interface over the 
 | POST | `/v1/tasks` | Submit a standalone task |
 | GET | `/v1/tasks/{id}` | Get task status |
 | GET | `/v1/tasks/{id}/events` | Stream task events (SSE) |
+| POST | `/v1/sessions` | Create an interactive session |
+| GET | `/v1/sessions` | List sessions |
 | GET | `/v1/sessions/{id}` | Get session status |
+| POST | `/v1/sessions/{id}/messages` | Send a message to an interactive session |
 | GET | `/v1/sessions/{id}/events` | Stream session events (SSE) |
+| DELETE | `/v1/sessions/{id}` | Close a session |
 | POST | `/v1/sessions/{id}/permissions/{permissionId}` | Approve or deny a permission request |
 | GET | `/v1/pools` | List pools |
 | GET | `/v1/pools/{id}` | Get pool status |
@@ -527,5 +541,44 @@ Content-Type: application/json
 - `remember`: Scope of the decision. `once` applies to this request only. `session` auto-applies the same decision for the same tool for the rest of the session. `always` persists to future sessions (stored in AgentConfig annotation).
 
 The API server publishes the decision to the NATS reply subject `permissions.{session-id}.{permissionId}`. The bridge subscribes to this subject and forwards the response to the SDK as a JSON-RPC reply. The SSE stream on `/v1/sessions/{id}/events` includes permission request and response events, so clients can build interactive approval UIs.
+
+#### Interactive Session Endpoints
+
+**Create an interactive session:**
+
+```
+POST /v1/sessions
+Content-Type: application/json
+
+{
+  "poolRef": "claude-code-pool",
+  "agentType": "claude-code",         // optional: defaults to pool's agentConfig
+  "prompt": "Help me debug the auth module",  // optional initial message
+  "timeout": "30m"                    // optional: idle timeout (default: 1h)
+}
+```
+
+The API server claims a sandbox from the pool, creates a Session CR with `mode: interactive`, and returns the session ID. The agent starts and processes the initial prompt (if provided). The session stays `Active` awaiting further messages.
+
+**Send a message:**
+
+```
+POST /v1/sessions/{id}/messages
+Content-Type: application/json
+
+{
+  "message": "Now add error handling to the login function"
+}
+```
+
+The API server forwards the message to the bridge sidecar, which sends it to the agent via `session/prompt` ACP JSON-RPC. The agent processes the message and returns to awaiting the next message. Events stream on the SSE endpoint during processing.
+
+**Close a session:**
+
+```
+DELETE /v1/sessions/{id}
+```
+
+The API server closes the ACP session via the bridge, publishes `session.completed` to NATS, and releases the sandbox back to the pool.
 
 All endpoints require authentication (bearer token or mTLS) and respect Kubernetes RBAC via impersonation.
