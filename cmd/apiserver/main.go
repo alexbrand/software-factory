@@ -15,6 +15,7 @@ import (
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
 	"github.com/alexbrand/software-factory/internal/apiserver"
+	"github.com/alexbrand/software-factory/internal/bridge"
 	"github.com/alexbrand/software-factory/pkg/events"
 )
 
@@ -87,6 +88,9 @@ func main() {
 	}
 
 	handlers := apiserver.NewHandlers(k8sClient, subscriber, logger, namespace)
+	handlers.SetBridgeClientFactory(func(baseURL string) apiserver.BridgeClient {
+		return bridge.NewClient(baseURL)
+	})
 	srv := apiserver.NewServer(handlers, addr, logger)
 
 	logger.Info("starting apiserver", "addr", addr, "namespace", namespace)
