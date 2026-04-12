@@ -47,8 +47,18 @@ spec:
                 items:
                   type: string
                 type: array
+              mode:
+                description: |-
+                  Mode controls session lifecycle. "task" (default) auto-completes after
+                  one prompt. "interactive" stays open for multi-turn conversation.
+                enum:
+                - task
+                - interactive
+                type: string
               prompt:
-                description: Prompt is the prompt to send to the agent.
+                description: |-
+                  Prompt is the initial prompt to send to the agent.
+                  In interactive mode, this is optional.
                 type: string
               sandboxRef:
                 description: SandboxRef references the sandbox this session runs in.
@@ -60,7 +70,9 @@ spec:
                 - name
                 type: object
               taskRef:
-                description: TaskRef references the task this session is executing.
+                description: |-
+                  TaskRef references the task this session is executing.
+                  Present only in task mode.
                 properties:
                   name:
                     description: Name of the referent.
@@ -70,12 +82,11 @@ spec:
                 type: object
               timeout:
                 description: |-
-                  Timeout is the maximum duration for this session.
-                  Inherited from the Task's spec.timeout. Default: 1h.
+                  Timeout is the maximum duration for task mode sessions, or the idle
+                  timeout for interactive mode sessions. Default: 1h.
                 type: string
             required:
             - agentType
-            - prompt
             - sandboxRef
             type: object
           status:

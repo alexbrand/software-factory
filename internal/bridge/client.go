@@ -26,6 +26,10 @@ type SessionConfig struct {
 	// PermissionMode controls how permission requests are handled.
 	// Values: "bypass" (default), "autoApprove", "requireApproval".
 	PermissionMode string `json:"permissionMode,omitempty"`
+
+	// Mode controls session lifecycle. "task" (default) auto-completes
+	// after one prompt. "interactive" stays open for follow-up messages.
+	Mode string `json:"mode,omitempty"`
 }
 
 // SessionResponse is the response from the bridge when starting a session.
