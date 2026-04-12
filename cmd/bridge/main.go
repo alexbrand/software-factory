@@ -68,18 +68,18 @@ func main() {
 		opts.Name = fmt.Sprintf("bridge-%s", *sandboxName)
 		conn, js, err := events.Connect(opts)
 		if err != nil {
-			logger.Error("failed to connect to NATS", "error", err)
-			os.Exit(1)
-		}
-		defer conn.Close()
+			logger.Warn("NATS unavailable, events will not be published", "error", err)
+		} else {
+			defer conn.Close()
+			logger.Info("connected to NATS", "url", *natsURL)
 
-		publisher := events.NewPublisher(js)
-		if err := publisher.EnsureStream(ctx, events.DefaultStreamName); err != nil {
-			logger.Error("failed to ensure NATS stream", "error", err)
-			os.Exit(1)
+			publisher := events.NewPublisher(js)
+			if err := publisher.EnsureStream(ctx, events.DefaultStreamName); err != nil {
+				logger.Warn("NATS stream setup failed, events will not be published", "error", err)
+			} else {
+				eventForwarder = bridge.NewEventForwarder(publisher, *namespace, logger)
+			}
 		}
-
-		eventForwarder = bridge.NewEventForwarder(publisher, *namespace, logger)
 	}
 
 	// Create and start credential proxy.

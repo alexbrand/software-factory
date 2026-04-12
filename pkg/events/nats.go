@@ -44,7 +44,7 @@ func Connect(opts ConnectOptions) (*nats.Conn, nats.JetStreamContext, error) {
 	natsOpts := []nats.Option{
 		nats.MaxReconnects(opts.MaxReconnects),
 		nats.ReconnectWait(opts.ReconnectWait),
-		nats.RetryOnFailedConnect(true),
+		nats.Timeout(10 * time.Second),
 	}
 	if opts.Name != "" {
 		natsOpts = append(natsOpts, nats.Name(opts.Name))

@@ -361,7 +361,9 @@ func (r *SandboxReconciler) ensureNetworkPolicy(ctx context.Context, sandbox *fa
 	protocolTCP := corev1.ProtocolTCP
 	dnsPort := intstr.FromInt32(53)
 
-	// Always allow DNS
+	natsPort := intstr.FromInt32(4222)
+
+	// Always allow DNS and NATS (cross-namespace).
 	egressRules := []networkingv1.NetworkPolicyEgressRule{
 		{
 			To: []networkingv1.NetworkPolicyPeer{
@@ -369,6 +371,7 @@ func (r *SandboxReconciler) ensureNetworkPolicy(ctx context.Context, sandbox *fa
 			},
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Port: &dnsPort, Protocol: &protocolUDP},
+				{Port: &natsPort, Protocol: &protocolTCP},
 			},
 		},
 	}
@@ -574,6 +577,7 @@ func (r *SandboxReconciler) buildPod(sandbox *factoryv1alpha1.Sandbox, pool *fac
 			{Name: "SDK_PORT", Value: fmt.Sprintf("%d", sdkPort)},
 			{Name: "SANDBOX_NAME", Value: sandbox.Name},
 			{Name: "SANDBOX_NAMESPACE", Value: sandbox.Namespace},
+			{Name: "NATS_URL", Value: fmt.Sprintf("nats://nats.%s.svc.cluster.local:4222", "factory-system")},
 		},
 	}
 
