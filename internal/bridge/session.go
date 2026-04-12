@@ -42,6 +42,9 @@ type StartSessionConfig struct {
 	// bridge server to publish a session.failed event on prompt errors
 	// (e.g., invalid API key) instead of silently hanging.
 	OnPromptError func(serverID string, err error)
+	// OnPromptComplete is called when the prompt RPC succeeds. This allows
+	// the bridge server to close the ACP session and publish session.completed.
+	OnPromptComplete func(serverID string)
 }
 
 // ContextFile represents a file to write to the sandbox before starting the session.
@@ -98,6 +101,11 @@ func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfi
 			if cfg.OnPromptError != nil {
 				cfg.OnPromptError(serverID, err)
 			}
+			return
+		}
+		m.logger.Info("prompt completed", "serverID", serverID)
+		if cfg.OnPromptComplete != nil {
+			cfg.OnPromptComplete(serverID)
 		}
 	}()
 

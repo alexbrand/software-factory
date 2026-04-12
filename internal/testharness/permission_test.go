@@ -89,6 +89,11 @@ func TestPermissionGating_RequireApproval(t *testing.T) {
 	// Set pod IP (envtest has no kubelet).
 	h.SetPodIP(ctx, "perm-test", sb.Status.PodName, "10.0.0.2")
 
+	// Delay the prompt so it stays blocking while we test permission events.
+	h.FakeSDK().SetBehavior(testharness.SessionBehavior{
+		PromptDelay: 30 * time.Second,
+	})
+
 	// Create a Session CR.
 	session := &factoryv1alpha1.Session{
 		ObjectMeta: metav1.ObjectMeta{

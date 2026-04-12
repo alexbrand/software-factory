@@ -140,11 +140,11 @@ func TestHarness_Smoke(t *testing.T) {
 			t.Fatalf("creating session: %v", err)
 		}
 
-		// Wait for the session controller to move the session to Active.
+		// Wait for the session controller to start the session (Active or already Completed).
 		testharness.WaitFor(t, 30*time.Second, 500*time.Millisecond, func() bool {
 			var s factoryv1alpha1.Session
 			err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s)
-			return err == nil && s.Status.Phase == factoryv1alpha1.SessionPhaseActive
+			return err == nil && (s.Status.Phase == factoryv1alpha1.SessionPhaseActive || s.Status.Phase == factoryv1alpha1.SessionPhaseCompleted)
 		})
 
 		// Verify the fake SDK received the prompt through the bridge.

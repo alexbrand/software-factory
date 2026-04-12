@@ -106,8 +106,9 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		AgentType:      req.AgentType,
 		Prompt:         req.Prompt,
 		ContextFiles:   ctxFiles,
-		PermissionMode: req.PermissionMode,
-		OnPromptError:  s.makePromptErrorHandler(),
+		PermissionMode:   req.PermissionMode,
+		OnPromptError:    s.makePromptErrorHandler(),
+		OnPromptComplete: s.makePromptCompleteHandler(),
 	}
 
 	// Create a callback factory that wires up event forwarding and permission
@@ -176,6 +177,32 @@ func (s *Server) makePromptErrorHandler() func(serverID string, err error) {
 			SessionID: serverID,
 			Timestamp: time.Now().UTC(),
 			Type:      events.EventSessionFailed,
+			Data:      dataBytes,
+		}
+
+		_ = s.eventForwarder.publisher.Publish(
+			context.Background(),
+			s.eventForwarder.namespace,
+			event,
+		)
+	}
+}
+
+// makePromptCompleteHandler returns a callback that publishes session.completed
+// when the prompt succeeds.
+func (s *Server) makePromptCompleteHandler() func(serverID string) {
+	return func(serverID string) {
+		if s.eventForwarder == nil || s.eventForwarder.publisher == nil {
+			return
+		}
+
+		dataBytes, _ := json.Marshal(events.SessionCompletedData{})
+
+		event := events.Event{
+			ID:        uuid.New().String(),
+			SessionID: serverID,
+			Timestamp: time.Now().UTC(),
+			Type:      events.EventSessionCompleted,
 			Data:      dataBytes,
 		}
 

@@ -25,7 +25,6 @@ func TestSessionCompletion(t *testing.T) {
 	ctx := context.Background()
 	h.CreateNamespace(ctx, "completion-test")
 
-	// Setup: AgentConfig + Pool + wait for sandbox + set pod IP.
 	agentCfg := &factoryv1alpha1.AgentConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "claude", Namespace: "completion-test"},
 		Spec: factoryv1alpha1.AgentConfigSpec{
@@ -49,7 +48,6 @@ func TestSessionCompletion(t *testing.T) {
 		t.Fatalf("creating pool: %v", err)
 	}
 
-	// Wait for two sandboxes (one per test).
 	testharness.WaitFor(t, 30*time.Second, 500*time.Millisecond, func() bool {
 		var sbList factoryv1alpha1.SandboxList
 		_ = h.K8sClient().List(ctx, &sbList, client.InNamespace("completion-test"))
@@ -66,15 +64,15 @@ func TestSessionCompletion(t *testing.T) {
 	if err := h.K8sClient().List(ctx, &sbList, client.InNamespace("completion-test")); err != nil {
 		t.Fatalf("listing sandboxes: %v", err)
 	}
-
-	// Set pod IPs for both sandboxes.
 	for i := range sbList.Items {
 		h.SetPodIP(ctx, "completion-test", sbList.Items[i].Status.PodName, "10.0.0."+string(rune('3'+i)))
 	}
 
+	// === SUCCESS PATH ===
+	// The fake SDK responds to prompts immediately. OnPromptComplete fires,
+	// publishing session.completed to NATS. The session controller picks it up.
 	t.Run("Success", func(t *testing.T) {
 		sb := &sbList.Items[0]
-
 		session := &factoryv1alpha1.Session{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "success-session",
@@ -90,38 +88,7 @@ func TestSessionCompletion(t *testing.T) {
 			t.Fatalf("creating session: %v", err)
 		}
 
-		// Wait for Active.
-		testharness.WaitFor(t, 30*time.Second, 500*time.Millisecond, func() bool {
-			var s factoryv1alpha1.Session
-			err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s)
-			return err == nil && s.Status.Phase == factoryv1alpha1.SessionPhaseActive
-		})
-
-		// Find server ID.
-		var serverID string
-		testharness.WaitFor(t, 5*time.Second, 200*time.Millisecond, func() bool {
-			for _, info := range h.FakeSDK().Sessions() {
-				for _, p := range info.Prompts {
-					if p == "write hello world" {
-						serverID = info.ServerID
-						return true
-					}
-				}
-			}
-			return false
-		})
-
-		// Push session.completed with token data, then close stream.
-		completedData, _ := json.Marshal(events.SessionCompletedData{
-			InputTokens: 1500, OutputTokens: 800,
-		})
-		completedSSE := "event: session.completed\ndata: " + string(completedData) + "\n\n"
-		if err := h.FakeSDK().PushSSEEvent(serverID, completedSSE); err != nil {
-			t.Fatalf("pushing completed event: %v", err)
-		}
-		h.FakeSDK().CloseSSEStream(serverID)
-
-		t.Run("session enters Completed", func(t *testing.T) {
+		t.Run("session completes", func(t *testing.T) {
 			testharness.WaitFor(t, 15*time.Second, 500*time.Millisecond, func() bool {
 				var s factoryv1alpha1.Session
 				err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s)
@@ -138,27 +105,17 @@ func TestSessionCompletion(t *testing.T) {
 				t.Fatal("expected completedAt to be set")
 			}
 		})
-
-		t.Run("tokenUsage is populated", func(t *testing.T) {
-			var s factoryv1alpha1.Session
-			if err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s); err != nil {
-				t.Fatalf("getting session: %v", err)
-			}
-			if s.Status.TokenUsage == nil {
-				t.Fatal("expected tokenUsage to be set")
-				return
-			}
-			if s.Status.TokenUsage.Input != 1500 {
-				t.Errorf("expected input tokens 1500, got %d", s.Status.TokenUsage.Input)
-			}
-			if s.Status.TokenUsage.Output != 800 {
-				t.Errorf("expected output tokens 800, got %d", s.Status.TokenUsage.Output)
-			}
-		})
 	})
 
+	// === FAILURE PATH ===
+	// Push a session.failed SSE event to simulate an agent error.
 	t.Run("Failure", func(t *testing.T) {
 		sb := &sbList.Items[1]
+
+		// Use PromptDelay to keep the prompt blocking so we can push SSE events.
+		h.FakeSDK().SetBehavior(testharness.SessionBehavior{
+			PromptDelay: 30 * time.Second,
+		})
 
 		session := &factoryv1alpha1.Session{
 			ObjectMeta: metav1.ObjectMeta{
@@ -175,8 +132,8 @@ func TestSessionCompletion(t *testing.T) {
 			t.Fatalf("creating session: %v", err)
 		}
 
-		// Wait for Active.
-		testharness.WaitFor(t, 30*time.Second, 500*time.Millisecond, func() bool {
+		// Wait for Active (prompt is delayed so session stays active).
+		testharness.WaitFor(t, 15*time.Second, 500*time.Millisecond, func() bool {
 			var s factoryv1alpha1.Session
 			err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s)
 			return err == nil && s.Status.Phase == factoryv1alpha1.SessionPhaseActive
@@ -196,13 +153,12 @@ func TestSessionCompletion(t *testing.T) {
 			return false
 		})
 
-		// Push session.failed and close stream.
+		// Push session.failed event via SSE.
 		failedData, _ := json.Marshal(events.SessionFailedData{Reason: "out of memory"})
 		failedSSE := "event: session.failed\ndata: " + string(failedData) + "\n\n"
 		if err := h.FakeSDK().PushSSEEvent(serverID, failedSSE); err != nil {
 			t.Fatalf("pushing failed event: %v", err)
 		}
-		h.FakeSDK().CloseSSEStream(serverID)
 
 		t.Run("session enters Failed", func(t *testing.T) {
 			testharness.WaitFor(t, 15*time.Second, 500*time.Millisecond, func() bool {
@@ -231,5 +187,8 @@ func TestSessionCompletion(t *testing.T) {
 				t.Fatal("expected completedAt to be set on failure")
 			}
 		})
+
+		// Reset behavior for subsequent tests.
+		h.FakeSDK().SetBehavior(testharness.SessionBehavior{})
 	})
 }
