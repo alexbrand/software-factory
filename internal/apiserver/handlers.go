@@ -411,6 +411,66 @@ func (h *Handlers) ApprovePermission(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, decision)
 }
 
+// StreamSessionEvents handles GET /v1/sessions/{id}/events (SSE).
+func (h *Handlers) StreamSessionEvents(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("id")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "session id is required")
+		return
+	}
+
+	var session factoryv1alpha1.Session
+	key := types.NamespacedName{Name: name, Namespace: h.namespace}
+	if err := h.client.Get(r.Context(), key, &session); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("getting session: %v", err))
+		return
+	}
+
+	if h.subscriber == nil {
+		writeError(w, http.StatusServiceUnavailable, "event streaming not available")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	// Subscribe using the bridge server ID from the event stream subject.
+	streamID := session.Name
+	if session.Status.EventStreamSubject != "" && len(session.Status.EventStreamSubject) > len("sessions.") {
+		streamID = session.Status.EventStreamSubject[len("sessions."):]
+	}
+
+	sub, err := h.subscriber.SubscribeSession(ctx, session.Namespace, streamID, func(event events.Event) {
+		data, marshalErr := json.Marshal(event)
+		if marshalErr != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, data)
+		flusher.Flush()
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("subscribing to events: %v", err))
+		return
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	<-ctx.Done()
+}
+
 // CreateSession handles POST /v1/sessions — creates an interactive session.
 func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 	var req CreateSessionRequest

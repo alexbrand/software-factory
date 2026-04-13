@@ -28,6 +28,7 @@ func NewServer(h *Handlers, addr string, logger *slog.Logger) *Server {
 
 	// Session endpoints.
 	mux.HandleFunc("POST /v1/sessions", h.CreateSession)
+	mux.HandleFunc("GET /v1/sessions/{id}/events", h.StreamSessionEvents)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", h.SendMessage)
 	mux.HandleFunc("DELETE /v1/sessions/{id}", h.DeleteSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/permissions/{permissionId}", h.ApprovePermission)
