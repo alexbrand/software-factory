@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +153,68 @@ func TestInteractiveSession(t *testing.T) {
 			}
 			return false
 		})
+	})
+
+	// === ASSERT: SSE stream delivers events ===
+	t.Run("SSE stream delivers events", func(t *testing.T) {
+		api := h.APIClient()
+
+		// Connect to the SSE stream in a goroutine.
+		ctx2, cancel2 := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel2()
+
+		req, err := http.NewRequestWithContext(ctx2, http.MethodGet,
+			api.BaseURL()+"/v1/sessions/interactive-session/events", nil)
+		if err != nil {
+			t.Fatalf("creating SSE request: %v", err)
+		}
+		req.Header.Set("Accept", "text/event-stream")
+
+		sseResp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("connecting to SSE: %v", err)
+		}
+		defer func() { _ = sseResp.Body.Close() }()
+
+		if sseResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(sseResp.Body)
+			t.Fatalf("expected 200, got %d: %s", sseResp.StatusCode, string(body))
+		}
+
+		if ct := sseResp.Header.Get("Content-Type"); ct != "text/event-stream" {
+			t.Fatalf("expected Content-Type text/event-stream, got %s", ct)
+		}
+
+		// Push an event from the fake SDK so it flows through the bridge to NATS to SSE.
+		var serverID string
+		for _, info := range h.FakeSDK().Sessions() {
+			if info.ServerID != "" {
+				serverID = info.ServerID
+				break
+			}
+		}
+		if serverID == "" {
+			t.Fatal("no active session on fake SDK")
+			return
+		}
+
+		toolData := `{"tool":"bash","command":"ls"}`
+		sseEvent := "event: tool.call\ndata: " + toolData + "\n\n"
+		if err := h.FakeSDK().PushSSEEvent(serverID, sseEvent); err != nil {
+			t.Fatalf("pushing SSE event: %v", err)
+		}
+
+		// Read from the SSE stream until we get an event or timeout.
+		buf := make([]byte, 4096)
+		n, readErr := sseResp.Body.Read(buf)
+		if readErr != nil && n == 0 {
+			t.Fatalf("reading SSE stream: %v", readErr)
+		}
+
+		body := string(buf[:n])
+		if !strings.Contains(body, "event:") || !strings.Contains(body, "data:") {
+			t.Errorf("expected SSE event with event: and data: fields, got: %s", body)
+		}
 	})
 
 	// === ACT: Close the session via the API ===
