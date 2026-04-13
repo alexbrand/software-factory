@@ -48,27 +48,49 @@ const (
 	FailureReasonBridgeLost FailureReason = "BridgeLost"
 )
 
+// SessionMode controls whether a session auto-completes after a single prompt
+// or stays open for multi-turn conversation.
+// +kubebuilder:validation:Enum=task;interactive
+type SessionMode string
+
+const (
+	// SessionModeTask is the default. The session runs one prompt and completes.
+	SessionModeTask SessionMode = "task"
+
+	// SessionModeInteractive keeps the session open for follow-up messages.
+	// The session stays Active between messages until explicitly closed or idle timeout.
+	SessionModeInteractive SessionMode = "interactive"
+)
+
 // SessionSpec defines the desired state of a Session.
 type SessionSpec struct {
 	// SandboxRef references the sandbox this session runs in.
 	SandboxRef LocalObjectReference `json:"sandboxRef"`
 
+	// Mode controls session lifecycle. "task" (default) auto-completes after
+	// one prompt. "interactive" stays open for multi-turn conversation.
+	// +optional
+	Mode SessionMode `json:"mode,omitempty"`
+
 	// TaskRef references the task this session is executing.
+	// Present only in task mode.
 	// +optional
 	TaskRef *LocalObjectReference `json:"taskRef,omitempty"`
 
 	// AgentType identifies the type of agent for this session.
 	AgentType string `json:"agentType"`
 
-	// Prompt is the prompt to send to the agent.
-	Prompt string `json:"prompt"`
+	// Prompt is the initial prompt to send to the agent.
+	// In interactive mode, this is optional.
+	// +optional
+	Prompt string `json:"prompt,omitempty"`
 
 	// ContextFiles is a list of file paths to provide as context.
 	// +optional
 	ContextFiles []string `json:"contextFiles,omitempty"`
 
-	// Timeout is the maximum duration for this session.
-	// Inherited from the Task's spec.timeout. Default: 1h.
+	// Timeout is the maximum duration for task mode sessions, or the idle
+	// timeout for interactive mode sessions. Default: 1h.
 	// +optional
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
 }

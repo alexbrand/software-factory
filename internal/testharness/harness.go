@@ -205,6 +205,10 @@ func (h *Harness) startAPIServer() {
 	subscriber := &natsSubscriberAdapter{sub: h.subscriber}
 	handlers := apiserver.NewHandlers(h.k8sClient, subscriber, h.logger, h.namespace)
 	handlers.SetPermissionPublisher(&natsPermissionPublisher{conn: h.natsConn})
+	bridgeURL := h.bridgeHTTP.URL
+	handlers.SetBridgeClientFactory(func(_ string) apiserver.BridgeClient {
+		return bridge.NewClient(bridgeURL)
+	})
 	srv := apiserver.NewServer(handlers, ":0", h.logger)
 	h.apiHTTP = httptest.NewServer(srv.Handler())
 }

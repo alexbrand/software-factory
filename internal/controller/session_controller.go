@@ -125,6 +125,7 @@ func (r *SessionReconciler) reconcilePending(ctx context.Context, session *facto
 		Prompt:         session.Spec.Prompt,
 		ContextFiles:   session.Spec.ContextFiles,
 		PermissionMode: permissionMode,
+		Mode:           string(session.Spec.Mode),
 	}
 
 	bridgeSessionID, err := bridgeClient.StartSession(ctx, cfg)

@@ -68,6 +68,31 @@ type PoolResponse struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// CreateSessionRequest is the request body for POST /v1/sessions.
+type CreateSessionRequest struct {
+	PoolRef   string `json:"poolRef"`
+	AgentType string `json:"agentType,omitempty"` // defaults to pool's agentConfig
+	Prompt    string `json:"prompt,omitempty"`    // optional initial message
+	Timeout   string `json:"timeout,omitempty"`   // idle timeout (default: 1h)
+}
+
+// SessionResponse is the response for session endpoints.
+type SessionResponse struct {
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	Namespace string  `json:"namespace"`
+	Mode      string  `json:"mode"`
+	Phase     string  `json:"phase"`
+	AgentType string  `json:"agentType"`
+	SandboxRef string `json:"sandboxRef,omitempty"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+// SendMessageRequest is the request body for POST /v1/sessions/{id}/messages.
+type SendMessageRequest struct {
+	Message string `json:"message"`
+}
+
 // PermissionDecisionRequest is the request body for POST /v1/sessions/{id}/permissions/{permissionId}.
 type PermissionDecisionRequest struct {
 	Decision string `json:"decision"` // "allow" or "deny"

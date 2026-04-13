@@ -106,9 +106,14 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		AgentType:      req.AgentType,
 		Prompt:         req.Prompt,
 		ContextFiles:   ctxFiles,
-		PermissionMode:   req.PermissionMode,
-		OnPromptError:    s.makePromptErrorHandler(),
-		OnPromptComplete: s.makePromptCompleteHandler(),
+		PermissionMode: req.PermissionMode,
+		OnPromptError:  s.makePromptErrorHandler(),
+	}
+
+	// In task mode, auto-complete when the prompt finishes.
+	// In interactive mode, keep the session open for follow-up messages.
+	if req.Mode != "interactive" {
+		cfg.OnPromptComplete = s.makePromptCompleteHandler()
 	}
 
 	// Create a callback factory that wires up event forwarding and permission
