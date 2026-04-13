@@ -462,7 +462,7 @@ func (r *SandboxReconciler) buildPod(sandbox *factoryv1alpha1.Sandbox, pool *fac
 
 	// Build secrets projected volume from credentials
 	if len(agentConfig.Spec.Credentials) > 0 {
-		var sources []corev1.VolumeProjection
+		sources := make([]corev1.VolumeProjection, 0, len(agentConfig.Spec.Credentials))
 		for _, cred := range agentConfig.Spec.Credentials {
 			sources = append(sources, corev1.VolumeProjection{
 				Secret: &corev1.SecretProjection{

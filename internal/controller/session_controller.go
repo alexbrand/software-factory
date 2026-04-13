@@ -190,6 +190,8 @@ func (r *SessionReconciler) watchSessionEvents(namespace, sessionName, bridgeSes
 		case events.EventSessionFailed:
 			r.handleSessionFailed(namespace, sessionName, ev)
 			cancel()
+		default:
+			// Ignore other event types.
 		}
 	})
 	if err != nil {

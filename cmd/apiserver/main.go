@@ -20,6 +20,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	var (
 		addr      string
 		namespace string
@@ -39,7 +43,7 @@ func main() {
 	config, err := ctrl.GetConfig()
 	if err != nil {
 		logger.Error("getting kubeconfig", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// The apiserver only needs a cached client to read CRs — no controllers,
@@ -47,13 +51,13 @@ func main() {
 	informerCache, err := cache.New(config, cache.Options{Scheme: scheme})
 	if err != nil {
 		logger.Error("creating cache", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	k8sClient, err := client.New(config, client.Options{Scheme: scheme, Cache: &client.CacheOptions{Reader: informerCache}})
 	if err != nil {
 		logger.Error("creating client", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Set up event subscriber if NATS URL is provided.
@@ -64,7 +68,7 @@ func main() {
 		nc, js, natsErr := events.Connect(opts)
 		if natsErr != nil {
 			logger.Error("connecting to NATS", "error", natsErr)
-			os.Exit(1)
+			return 1
 		}
 		defer nc.Close()
 		subscriber = newNATSSubscriber(events.NewSubscriber(js))
@@ -77,14 +81,13 @@ func main() {
 	go func() {
 		if startErr := informerCache.Start(ctx); startErr != nil {
 			logger.Error("cache failed", "error", startErr)
-			os.Exit(1)
 		}
 	}()
 
 	// Wait for cache to sync.
 	if !informerCache.WaitForCacheSync(ctx) {
 		logger.Error("cache sync failed")
-		os.Exit(1)
+		return 1
 	}
 
 	handlers := apiserver.NewHandlers(k8sClient, subscriber, logger, namespace)
@@ -96,8 +99,9 @@ func main() {
 	logger.Info("starting apiserver", "addr", addr, "namespace", namespace)
 	if err := srv.ListenAndServe(); err != nil {
 		logger.Error("server failed", "error", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // natsSubscriberAdapter adapts events.Subscriber to the apiserver.EventSubscriber interface.

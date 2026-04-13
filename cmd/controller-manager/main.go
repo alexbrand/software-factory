@@ -36,6 +36,10 @@ func init() {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	opts := zap.Options{Development: true}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -45,7 +49,7 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create manager")
-		os.Exit(1)
+		return 1
 	}
 
 	if err := (&controller.PoolReconciler{
@@ -53,7 +57,7 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pool")
-		os.Exit(1)
+		return 1
 	}
 
 	if err := (&controller.SandboxReconciler{
@@ -61,7 +65,7 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Sandbox")
-		os.Exit(1)
+		return 1
 	}
 
 	if err := (&controller.WorkflowReconciler{
@@ -69,7 +73,7 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workflow")
-		os.Exit(1)
+		return 1
 	}
 
 	if err := (&controller.TaskReconciler{
@@ -77,7 +81,7 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Task")
-		os.Exit(1)
+		return 1
 	}
 
 	// Connect to NATS for session event publishing and subscribing.
@@ -110,21 +114,22 @@ func main() {
 		}(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Session")
-		os.Exit(1)
+		return 1
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+		return 1
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+		return 1
 	}
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
