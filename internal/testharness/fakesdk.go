@@ -147,7 +147,7 @@ func (f *FakeSDK) WrittenFiles() []WriteRecord {
 func (f *FakeSDK) Sessions() []FakeSessionInfo {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []FakeSessionInfo
+	out := make([]FakeSessionInfo, 0, len(f.sessions))
 	for _, s := range f.sessions {
 		prompts := make([]string, len(s.prompts))
 		copy(prompts, s.prompts)
@@ -177,7 +177,7 @@ func (f *FakeSDK) Prompts() []string {
 func (f *FakeSDK) SessionServerIDs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var ids []string
+	ids := make([]string, 0, len(f.sessions))
 	for id := range f.sessions {
 		ids = append(ids, id)
 	}

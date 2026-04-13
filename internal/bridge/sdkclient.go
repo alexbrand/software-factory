@@ -331,14 +331,15 @@ func parseSSEStream(ctx context.Context, r io.Reader, ch chan<- SSEEvent) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "event:") {
+		switch {
+		case strings.HasPrefix(line, "event:"):
 			current.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
+		case strings.HasPrefix(line, "data:"):
 			if current.Data != "" {
 				current.Data += "\n"
 			}
 			current.Data += strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		} else if strings.HasPrefix(line, "id:") {
+		case strings.HasPrefix(line, "id:"):
 			current.ID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
 		}
 	}

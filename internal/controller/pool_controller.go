@@ -62,6 +62,8 @@ func (r *PoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			idleSandboxes = append(idleSandboxes, sandboxList.Items[i])
 		case factoryv1alpha1.SandboxPhaseCreating, "":
 			creating++
+		default:
+			// Ignore other phases (e.g. Terminating handled above).
 		}
 	}
 

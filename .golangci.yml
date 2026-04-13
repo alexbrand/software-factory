@@ -1,0 +1,14 @@
+version: "2"
+
+linters:
+  enable:
+    - exhaustive    # switch statements must cover all enum cases
+    - gocritic      # code style and performance
+    - nilerr        # catches if err != nil { return nil }
+    - prealloc      # slice preallocation
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+  exclusions:
+    paths:
+      - sandbox-agent
