@@ -582,7 +582,8 @@ func (h *Handlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cancel the session on the bridge if it's still active.
+	// Cancel the session on the bridge in the background — don't block
+	// the HTTP response. The bridge cancel can hang if a prompt is in progress.
 	if session.Status.Phase == factoryv1alpha1.SessionPhaseActive ||
 		session.Status.Phase == factoryv1alpha1.SessionPhaseWaitingForApproval {
 		bridgeURL, _ := h.getBridgeEndpoint(r.Context(), &session)
@@ -592,7 +593,7 @@ func (h *Handlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
 			if len(serverID) > len("sessions.") {
 				serverID = serverID[len("sessions."):]
 			}
-			_ = bridgeClient.CancelSession(r.Context(), serverID)
+			go func() { _ = bridgeClient.CancelSession(context.Background(), serverID) }()
 		}
 	}
 
