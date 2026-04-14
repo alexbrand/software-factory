@@ -27,10 +27,12 @@ spec:
       storageClassName: standard
       reclaimPolicy: Delete    # No state worth preserving between tasks
 
-    # MCP tools via ToolHive VirtualMCPServer
-    mcpTools:
-      vmcpRef:
-        name: assistant-vmcp    # VirtualMCPServer in same namespace
+    # MCP tools — provisioned by ToolHive in this example
+    mcpServers:
+      - name: google-calendar
+        url: http://assistant-vmcp.personal-assistant.svc:8080
+      - name: gmail
+        url: http://assistant-vmcp.personal-assistant.svc:8080
 
     networkPolicy:
       egressRules:

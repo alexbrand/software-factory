@@ -80,22 +80,27 @@ spec:
                 description: SandboxTemplate defines the template for sandboxes created
                   by this pool.
                 properties:
-                  mcpTools:
-                    description: MCPTools configures MCP tool access via ToolHive.
-                    properties:
-                      vmcpRef:
-                        description: VMCPRef references a VirtualMCPServer in the
-                          same namespace.
-                        properties:
-                          name:
-                            description: Name of the referent.
-                            type: string
-                        required:
-                        - name
-                        type: object
-                    required:
-                    - vmcpRef
-                    type: object
+                  mcpServers:
+                    description: |-
+                      MCPTools configures MCP tool access via ToolHive.
+                      MCPServers defines MCP tool endpoints available to sandboxes in this pool.
+                    items:
+                      description: MCPServerEndpoint defines an MCP server available
+                        to sandboxes.
+                      properties:
+                        name:
+                          description: Name is a human-readable identifier for this
+                            MCP server.
+                          type: string
+                        url:
+                          description: URL is the endpoint where the MCP server is
+                            reachable.
+                          type: string
+                      required:
+                      - name
+                      - url
+                      type: object
+                    type: array
                   networkPolicy:
                     description: NetworkPolicy defines network access rules for sandboxes.
                     properties:
