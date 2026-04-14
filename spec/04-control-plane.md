@@ -57,11 +57,15 @@ spec:
           branch: main
           path: /workspace/monorepo
 
-    # MCP tool access (optional, via ToolHive)
-    mcpTools:
-      vmcpRef:
-        name: team-alpha-tools          # VirtualMCPServer in same namespace
-      # Bridge sidecar configures agent's MCP client to point at this endpoint
+    # MCP tool access (optional)
+    mcpServers:
+      - name: github
+        url: http://github-mcp.team-alpha.svc:8080
+      - name: postgres
+        url: http://postgres-mcp.team-alpha.svc:8080
+    # The bridge passes these endpoints to the SDK when creating a session.
+    # MCP servers can be provisioned by ToolHive, deployed manually, or
+    # run as any MCP-compatible HTTP endpoint.
 
     # Network policy
     networkPolicy:

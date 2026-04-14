@@ -449,12 +449,39 @@ Before starting a session, the bridge uses the SDK's filesystem API to prepare t
 
 1. **Write context files**: Task specs, `CLAUDE.md`/`AGENTS.md`, configuration.
 2. **Stage input artifacts**: Download from object storage, write via `/v1/fs/file`.
-3. **Configure MCP tools**: If the Pool references a ToolHive `VirtualMCPServer`, the bridge configures the agent's MCP client via the SDK's `/v1/config/mcp` endpoint to connect to the vMCP Service endpoint. This gives the agent access to all tools curated for its team/tenant.
+3. **Configure MCP tools**: If the Pool defines `mcpServers`, the bridge passes the server endpoints to the SDK when creating the ACP session via the `mcpServers` parameter in the `session/new` JSON-RPC call. This gives the agent access to all MCP tools available at those endpoints.
 
 After a session completes:
 
 1. **Extract output artifacts**: Read specified paths via `/v1/fs/file`, upload to object storage.
 2. **Collect metadata**: Token usage, duration, tool call counts from the event stream.
+
+## MCP Tool Configuration
+
+The bridge configures MCP tools by passing server endpoints to the SDK during session creation. The system is MCP-provider-agnostic — it works with any MCP-compatible HTTP endpoint.
+
+### How MCP servers reach the agent
+
+1. The operator defines `mcpServers` in the Pool's `sandboxTemplate` — a list of `{name, url}` entries pointing to MCP server endpoints (Kubernetes Services, external URLs, etc.).
+2. The Sandbox Controller reads these entries and injects them into the bridge container as the `MCP_SERVERS` environment variable (JSON-encoded list).
+3. When starting a session, the bridge parses `MCP_SERVERS` and passes the endpoints to the SDK via the `mcpServers` parameter in the `session/new` JSON-RPC call.
+4. The SDK's agent process discovers tools from the MCP servers and can call them during the session.
+
+### NetworkPolicy
+
+The sandbox NetworkPolicy must allow egress to MCP server endpoints. The Sandbox Controller automatically adds egress rules for each `mcpServers` entry's host and port, alongside the existing DNS and NATS rules.
+
+### MCP server provisioning
+
+The spec does not prescribe how MCP servers are deployed. Options include:
+
+- **[ToolHive](https://github.com/stacklok/toolhive)** — Kubernetes operator for MCP server lifecycle management. Provides `VirtualMCPServer` (vMCP) for tool aggregation, conflict resolution, token optimization, and tool-level RBAC. Recommended for production deployments with many MCP servers. See [spec/10 — Prior Art](10-prior-art.md) for details.
+- **Manual deployment** — deploy MCP servers as standard Kubernetes Deployments + Services. Suitable for simple setups with a small number of tools.
+- **External endpoints** — point at MCP servers running outside the cluster.
+
+### Failure handling
+
+If an MCP server is unavailable when a session starts, the session starts without those tools — the agent can still run but won't have access to the unavailable tools. MCP tool call failures during a session surface as `tool.result` events with error payloads in the SSE stream. The agent handles these like any tool error — it can retry, use an alternative approach, or report the failure.
 
 ## AgentConfig CR
 

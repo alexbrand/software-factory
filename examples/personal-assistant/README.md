@@ -67,7 +67,7 @@ See [`manifests/task.yaml`](manifests/task.yaml).
 
 1. The **platform operator** deploys the ToolHive MCP servers for Google Calendar and Gmail. ToolHive runs each MCP server in its own container with secret injection for Google OAuth tokens. The `VirtualMCPServer` aggregates both behind a single HTTP endpoint with namespaced tool names (e.g., `calendar_list_events`, `gmail_search_messages`).
 
-2. The **Pool** references the vMCP via `mcpTools.vmcpRef`. When a sandbox is provisioned, the bridge sidecar configures the agent's MCP client to connect to the vMCP Service endpoint.
+2. The **Pool** lists MCP server endpoints via `mcpServers`. When a sandbox is provisioned, the bridge sidecar passes these endpoints to the SDK, giving the agent access to the MCP tools.
 
 3. When a **Task** is submitted, the agent (Pi) receives the prompt and can discover available MCP tools. It calls `calendar_list_events` to check tomorrow's schedule, `gmail_search_messages` to find relevant threads, and `calendar_create_event` to schedule meetings.
 

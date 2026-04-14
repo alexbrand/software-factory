@@ -197,29 +197,29 @@ spec:
 - **OIDC/OAuth SSO**: Built-in authorization server, integrates with Okta, Entra ID, Google
 - **GitOps-friendly**: All CRDs deployable via CI/CD pipelines
 
-### Decision: Adopt for MCP Tool Provisioning
+### Decision: Recommend for MCP Server Management
 
-ToolHive fills a gap in our architecture: **how do agents get access to MCP tools inside sandboxes?** Our spec's UC2 (Custom Tool-Using Agents) describes agents using MCP tools for databases, APIs, and dashboards, but we never specified how those MCP servers are deployed, managed, or secured.
+The Software Factory is MCP-provider-agnostic — the bridge passes MCP server URLs to the SDK, and any MCP-compatible endpoint works. ToolHive is the **recommended** MCP server management layer for production deployments.
 
 **Integration model:**
 
 ```
-Sandbox Pod                              ToolHive (in-cluster)
+Sandbox Pod                              MCP Servers (any provider)
 ├── Sandbox Agent SDK
-├── Bridge Sidecar ──────────────────►  vMCP Service
-│   (configures MCP via SDK              ├── MCPServer: github
-│    /v1/config/mcp endpoint)            ├── MCPServer: jira
-└── Agent Process                        ├── MCPServer: postgres
-    (uses MCP tools)                     └── MCPServer: custom-api
+├── Bridge Sidecar ──────────────────►  MCP endpoint (K8s Service / external URL)
+│   (passes mcpServers to SDK            ├── github-mcp
+│    in session/new)                     ├── jira-mcp
+└── Agent Process                        ├── postgres-mcp
+    (uses MCP tools)                     └── custom-api-mcp
 ```
 
-The bridge sidecar configures the agent's MCP client to point at a vMCP endpoint (a Kubernetes Service). ToolHive handles server lifecycle, secret injection, tool curation, and token optimization. Each tenant namespace gets its own MCPGroup + VirtualMCPServer.
+The bridge reads MCP server endpoints from the Pool configuration and passes them to the SDK. How those endpoints are provisioned is the operator's choice. ToolHive provides lifecycle management, tool aggregation (vMCP), secret injection, and token optimization at scale.
 
-**Why adopt:**
+**Why recommend ToolHive:**
 - Go + Kubernetes-native — same tech stack, operator pattern, CRDs
-- Founded by Kubernetes co-creator — deep alignment with cloud-native patterns
-- Complements, doesn't overlap — ToolHive manages MCP servers; we manage agent sandboxes and workflows
-- Solves non-trivial problems we'd otherwise build: tool aggregation, conflict resolution, token optimization, MCP-specific RBAC
+- Solves non-trivial problems: tool aggregation, conflict resolution, token optimization, MCP-specific RBAC
+- Complements the Software Factory — ToolHive manages MCP servers; we manage agent sandboxes and workflows
+- Not required — operators can deploy MCP servers manually or use any other provider
 
 ---
 
