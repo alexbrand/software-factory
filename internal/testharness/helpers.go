@@ -49,6 +49,9 @@ func (h *Harness) SetPodIP(ctx context.Context, namespace, name, podIP string) {
 		}
 		pod.Status.PodIP = podIP
 		pod.Status.Phase = corev1.PodRunning
+		pod.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+		}
 		if err := h.k8sClient.Status().Update(ctx, &pod); err == nil {
 			return
 		}

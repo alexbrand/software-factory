@@ -61,32 +61,18 @@ func (r *TaskReconciler) reconcilePending(ctx context.Context, task *factoryv1al
 		return r.ensureSession(ctx, task)
 	}
 
-	// Find an available sandbox in the referenced pool.
-	sandbox, err := r.findReadySandbox(ctx, task)
+	// Find and claim an available sandbox. Retry on conflict because the
+	// sandbox controller may update the sandbox's status concurrently.
+	sandbox, err := r.claimSandbox(ctx, task)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("finding ready sandbox: %w", err)
+		return ctrl.Result{}, fmt.Errorf("claiming sandbox: %w", err)
 	}
 	if sandbox == nil {
-		// No sandbox available, requeue.
+		// No sandbox available or claim retries exhausted, requeue.
 		return ctrl.Result{RequeueAfter: defaultRequeueDelay}, nil
 	}
 
-	// Claim the sandbox.
-	sandbox.Status.Phase = factoryv1alpha1.SandboxPhaseAssigned
-	sandbox.Status.AssignedTask = task.Name
-	if err := r.Status().Update(ctx, sandbox); err != nil {
-		return ctrl.Result{}, fmt.Errorf("claiming sandbox: %w", err)
-	}
-
-	// Update task with sandbox ref and transition to Running.
-	now := metav1.Now()
-	task.Status.SandboxRef = &factoryv1alpha1.LocalObjectReference{Name: sandbox.Name}
-	task.Status.Phase = factoryv1alpha1.TaskPhaseRunning
-	task.Status.StartedAt = &now
-	if err := r.Status().Update(ctx, task); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating task status to Running: %w", err)
-	}
-
+	// Sandbox claimed and task updated by claimSandbox. Requeue to create session.
 	return ctrl.Result{Requeue: true}, nil
 }
 
@@ -135,18 +121,53 @@ func (r *TaskReconciler) reconcileRunning(ctx context.Context, task *factoryv1al
 	}
 }
 
+// claimSandbox finds a Ready sandbox and atomically claims it. Retries up to
+// 3 times on conflict (the sandbox controller may update the sandbox concurrently).
+func (r *TaskReconciler) claimSandbox(ctx context.Context, task *factoryv1alpha1.Task) (*factoryv1alpha1.Sandbox, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		sandbox, err := r.findReadySandbox(ctx, task)
+		if err != nil {
+			return nil, err
+		}
+		if sandbox == nil {
+			return nil, nil
+		}
+
+		sandbox.Status.Phase = factoryv1alpha1.SandboxPhaseAssigned
+		sandbox.Status.AssignedTask = task.Name
+		if err := r.Status().Update(ctx, sandbox); err != nil {
+			if errors.IsConflict(err) {
+				continue // Retry with a fresh sandbox lookup
+			}
+			return nil, fmt.Errorf("updating sandbox status: %w", err)
+		}
+
+		// Update task status with sandbox ref.
+		now := metav1.Now()
+		task.Status.Phase = factoryv1alpha1.TaskPhaseRunning
+		task.Status.SandboxRef = &factoryv1alpha1.LocalObjectReference{Name: sandbox.Name}
+		task.Status.StartedAt = &now
+		task.Status.Attempts++
+		if err := r.Status().Update(ctx, task); err != nil {
+			return nil, fmt.Errorf("updating task status: %w", err)
+		}
+
+		return sandbox, nil
+	}
+
+	// All retries exhausted — requeue and try later.
+	return nil, nil
+}
+
 func (r *TaskReconciler) findReadySandbox(ctx context.Context, task *factoryv1alpha1.Task) (*factoryv1alpha1.Sandbox, error) {
 	var sandboxList factoryv1alpha1.SandboxList
-	if err := r.List(ctx, &sandboxList,
-		client.InNamespace(task.Namespace),
-		client.MatchingFields{"spec.poolRef.name": task.Spec.PoolRef.Name},
-	); err != nil {
+	if err := r.List(ctx, &sandboxList, client.InNamespace(task.Namespace)); err != nil {
 		return nil, fmt.Errorf("listing sandboxes: %w", err)
 	}
 
 	for i := range sandboxList.Items {
 		sb := &sandboxList.Items[i]
-		if sb.Status.Phase == factoryv1alpha1.SandboxPhaseReady {
+		if sb.Spec.PoolRef.Name == task.Spec.PoolRef.Name && sb.Status.Phase == factoryv1alpha1.SandboxPhaseReady {
 			return sb, nil
 		}
 	}
