@@ -9,16 +9,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
+	"github.com/alexbrand/software-factory/internal/apiserver"
 	"github.com/alexbrand/software-factory/internal/testharness"
 )
 
 // TestPromptFailure tests the user experience when the agent fails at startup
-// (e.g., invalid API key). The user should see the task fail quickly with a
-// clear reason — not hang in Running for an hour.
+// (e.g., invalid API key). The user submits a task via the API and should see
+// the task fail quickly with a clear reason.
 //
-// This test exercises the full signal path:
-//   SDK returns error → bridge publishes session.failed → controller updates
-//   Session CR → task controller reads session phase → Task CR moves to Failed
+// This is a true end-to-end UAT: task submitted via API → task controller
+// claims sandbox → creates session → agent fails → session Failed →
+// task Failed — all through real controllers.
 func TestPromptFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -38,7 +39,7 @@ func TestPromptFailure(t *testing.T) {
 		},
 	})
 
-	// Setup: AgentConfig + Pool + wait for a ready sandbox with pod IP.
+	// Setup: AgentConfig + Pool + wait for ready sandbox with pod IP.
 	agentCfg := &factoryv1alpha1.AgentConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "claude", Namespace: "prompt-fail-test"},
 		Spec: factoryv1alpha1.AgentConfigSpec{
@@ -74,73 +75,45 @@ func TestPromptFailure(t *testing.T) {
 	})
 	h.SetPodIP(ctx, "prompt-fail-test", sb.Status.PodName, "10.0.0.5")
 
-	// Create a Task and Session directly (simulating the task controller's
-	// sandbox-claim → session-create flow). This avoids races with the sandbox
-	// controller in envtest while still testing the failure propagation path.
-	task := &factoryv1alpha1.Task{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "bad-key-task",
-			Namespace: "prompt-fail-test",
-		},
-		Spec: factoryv1alpha1.TaskSpec{
-			PoolRef: factoryv1alpha1.LocalObjectReference{Name: "prompt-fail-pool"},
-			Prompt:  "this will fail because the API key is invalid",
-		},
-	}
-	if err := h.K8sClient().Create(ctx, task); err != nil {
-		t.Fatalf("creating task: %v", err)
-	}
-
-	// Set task to Running with sandbox and session refs (as the task controller would).
-	now := metav1.Now()
-	task.Status.Phase = factoryv1alpha1.TaskPhaseRunning
-	task.Status.SandboxRef = &factoryv1alpha1.LocalObjectReference{Name: sb.Name}
-	task.Status.SessionRef = &factoryv1alpha1.LocalObjectReference{Name: "bad-key-session"}
-	task.Status.StartedAt = &now
-	task.Status.Attempts = 1
-	if err := h.K8sClient().Status().Update(ctx, task); err != nil {
-		t.Fatalf("updating task status: %v", err)
-	}
-
-	// Create the session (as the task controller would).
-	session := &factoryv1alpha1.Session{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "bad-key-session",
-			Namespace: "prompt-fail-test",
-		},
-		Spec: factoryv1alpha1.SessionSpec{
-			SandboxRef: factoryv1alpha1.LocalObjectReference{Name: sb.Name},
-			AgentType:  "claude-code",
-			Prompt:     "this will fail because the API key is invalid",
-		},
-	}
-	if err := h.K8sClient().Create(ctx, session); err != nil {
-		t.Fatalf("creating session: %v", err)
-	}
-
-	// === ASSERT: Session moves to Failed quickly (via NATS event from bridge) ===
-	t.Run("session fails with AgentError", func(t *testing.T) {
-		testharness.WaitFor(t, 15*time.Second, 500*time.Millisecond, func() bool {
-			var s factoryv1alpha1.Session
-			err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s)
-			return err == nil && s.Status.Phase == factoryv1alpha1.SessionPhaseFailed
-		})
-
-		var s factoryv1alpha1.Session
-		if err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s); err != nil {
-			t.Fatalf("getting session: %v", err)
-		}
-		if s.Status.FailureReason != factoryv1alpha1.FailureReasonAgentError {
-			t.Errorf("expected failureReason AgentError, got %q", s.Status.FailureReason)
-		}
+	// === USER ACTION: Submit a task via the API ===
+	api := h.APIClient()
+	taskResp, err := api.CreateTask(apiserver.CreateTaskRequest{
+		Name:    "bad-key-task",
+		PoolRef: "prompt-fail-pool",
+		Prompt:  "this will fail because the API key is invalid",
 	})
+	if err != nil {
+		t.Fatalf("creating task via API: %v", err)
+	}
+	if taskResp.Name != "bad-key-task" {
+		t.Fatalf("expected task name 'bad-key-task', got %s", taskResp.Name)
+	}
 
-	// === ASSERT: Task propagates the failure (via task controller polling session) ===
+	// === USER EXPECTATION: Task fails quickly ===
 	t.Run("task fails via API", func(t *testing.T) {
-		api := h.APIClient()
 		testharness.WaitFor(t, 30*time.Second, 500*time.Millisecond, func() bool {
 			got, getErr := api.GetTask("bad-key-task")
 			return getErr == nil && got.Phase == "Failed"
 		})
+	})
+
+	// === USER EXPECTATION: Session has a clear failure reason ===
+	t.Run("session has failureReason AgentError", func(t *testing.T) {
+		var sessions factoryv1alpha1.SessionList
+		if err := h.K8sClient().List(ctx, &sessions, client.InNamespace("prompt-fail-test")); err != nil {
+			t.Fatalf("listing sessions: %v", err)
+		}
+		if len(sessions.Items) == 0 {
+			t.Fatal("expected at least one session")
+			return
+		}
+
+		sess := sessions.Items[0]
+		if sess.Status.Phase != factoryv1alpha1.SessionPhaseFailed {
+			t.Errorf("expected session phase Failed, got %s", sess.Status.Phase)
+		}
+		if sess.Status.FailureReason != factoryv1alpha1.FailureReasonAgentError {
+			t.Errorf("expected failureReason AgentError, got %q", sess.Status.FailureReason)
+		}
 	})
 }
