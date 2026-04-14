@@ -247,3 +247,173 @@ func TestPermissionGating_RequireApproval(t *testing.T) {
 		})
 	})
 }
+
+// TestPermissionGating_AutoApprove tests that autoApprove mode:
+// 1. Does not block the agent on permission requests
+// 2. Publishes EventPermissionRequested and EventPermissionResponded to NATS for audit
+// 3. The response has decision=allow and respondedBy=bridge:autoApprove
+func TestPermissionGating_AutoApprove(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	h := testharness.New(t, testharness.WithNamespace("auto-approve-test"))
+	h.Start()
+
+	ctx := context.Background()
+	h.CreateNamespace(ctx, "auto-approve-test")
+
+	// Create AgentConfig with autoApprove mode.
+	agentCfg := &factoryv1alpha1.AgentConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "claude-auto", Namespace: "auto-approve-test"},
+		Spec: factoryv1alpha1.AgentConfigSpec{
+			AgentType:      "claude-code",
+			PermissionMode: factoryv1alpha1.PermissionModeAutoApprove,
+			SDK:            factoryv1alpha1.SDKConfig{Image: "sdk:latest"},
+			Bridge:         factoryv1alpha1.BridgeConfig{Image: "bridge:latest"},
+		},
+	}
+	if err := h.K8sClient().Create(ctx, agentCfg); err != nil {
+		t.Fatalf("creating agent config: %v", err)
+	}
+
+	pool := &factoryv1alpha1.Pool{
+		ObjectMeta: metav1.ObjectMeta{Name: "auto-pool", Namespace: "auto-approve-test"},
+		Spec: factoryv1alpha1.PoolSpec{
+			AgentConfigRef: factoryv1alpha1.LocalObjectReference{Name: "claude-auto"},
+			Replicas:       factoryv1alpha1.ReplicasConfig{Min: 1, Max: 5},
+		},
+	}
+	if err := h.K8sClient().Create(ctx, pool); err != nil {
+		t.Fatalf("creating pool: %v", err)
+	}
+
+	var sb factoryv1alpha1.Sandbox
+	testharness.WaitFor(t, 30*time.Second, 500*time.Millisecond, func() bool {
+		var sbList factoryv1alpha1.SandboxList
+		_ = h.K8sClient().List(ctx, &sbList, client.InNamespace("auto-approve-test"))
+		if len(sbList.Items) == 0 {
+			return false
+		}
+		sb = sbList.Items[0]
+		return sb.Status.PodName != ""
+	})
+	h.SetPodIP(ctx, "auto-approve-test", sb.Status.PodName, "10.0.0.7")
+
+	// Delay prompt so session stays active while we push permission events.
+	h.FakeSDK().SetBehavior(testharness.SessionBehavior{
+		PromptDelay: 30 * time.Second,
+	})
+
+	// Subscribe to NATS to capture permission events.
+	var permissionEvents []events.Event
+	permCtx, permCancel := context.WithCancel(ctx)
+	defer permCancel()
+	_, err := h.Subscriber().SubscribeSession(permCtx, "auto-approve-test", ">", func(ev events.Event) {
+		if ev.Type == events.EventPermissionRequested || ev.Type == events.EventPermissionResponded {
+			permissionEvents = append(permissionEvents, ev)
+		}
+	})
+	if err != nil {
+		t.Fatalf("subscribing to events: %v", err)
+	}
+
+	// Create session.
+	session := &factoryv1alpha1.Session{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "auto-session",
+			Namespace: "auto-approve-test",
+		},
+		Spec: factoryv1alpha1.SessionSpec{
+			SandboxRef: factoryv1alpha1.LocalObjectReference{Name: sb.Name},
+			AgentType:  "claude-code",
+			Prompt:     "do something with auto-approve",
+		},
+	}
+	if err := h.K8sClient().Create(ctx, session); err != nil {
+		t.Fatalf("creating session: %v", err)
+	}
+
+	// Wait for Active.
+	testharness.WaitFor(t, 15*time.Second, 500*time.Millisecond, func() bool {
+		var s factoryv1alpha1.Session
+		err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s)
+		return err == nil && s.Status.Phase == factoryv1alpha1.SessionPhaseActive
+	})
+
+	// Find server ID.
+	var serverID string
+	testharness.WaitFor(t, 5*time.Second, 200*time.Millisecond, func() bool {
+		ids := h.FakeSDK().SessionServerIDs()
+		if len(ids) > 0 {
+			serverID = ids[0]
+			return true
+		}
+		return false
+	})
+
+	// Push a permission request from the fake SDK.
+	permReqData, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "session/request_permission",
+		"params": map[string]interface{}{
+			"toolName": "Bash",
+			"title":    "rm -rf /tmp/old",
+		},
+	})
+	sseEvent := "event: message\ndata: " + string(permReqData) + "\n\n"
+	if err := h.FakeSDK().PushSSEEvent(serverID, sseEvent); err != nil {
+		t.Fatalf("pushing SSE event: %v", err)
+	}
+
+	// === ASSERT: Session stays Active (not WaitingForApproval) ===
+	t.Run("session stays Active", func(t *testing.T) {
+		// Give the bridge a moment to process the event.
+		time.Sleep(1 * time.Second)
+
+		var s factoryv1alpha1.Session
+		if err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s); err != nil {
+			t.Fatalf("getting session: %v", err)
+		}
+		if s.Status.Phase != factoryv1alpha1.SessionPhaseActive {
+			t.Errorf("expected session to stay Active, got %s", s.Status.Phase)
+		}
+	})
+
+	// === ASSERT: Both permission events published to NATS ===
+	t.Run("audit events published", func(t *testing.T) {
+		testharness.WaitFor(t, 10*time.Second, 200*time.Millisecond, func() bool {
+			hasReq := false
+			hasResp := false
+			for _, ev := range permissionEvents {
+				if ev.Type == events.EventPermissionRequested {
+					hasReq = true
+				}
+				if ev.Type == events.EventPermissionResponded {
+					hasResp = true
+				}
+			}
+			return hasReq && hasResp
+		})
+	})
+
+	// === ASSERT: Response has decision=allow and respondedBy=bridge:autoApprove ===
+	t.Run("response is auto-approved", func(t *testing.T) {
+		for _, ev := range permissionEvents {
+			if ev.Type == events.EventPermissionResponded {
+				var data events.PermissionResponseData
+				if err := json.Unmarshal(ev.Data, &data); err != nil {
+					t.Fatalf("unmarshaling response: %v", err)
+				}
+				if data.Decision != "allow" {
+					t.Errorf("expected decision 'allow', got %s", data.Decision)
+				}
+				if data.RespondedBy != "bridge:autoApprove" {
+					t.Errorf("expected respondedBy 'bridge:autoApprove', got %s", data.RespondedBy)
+				}
+				return
+			}
+		}
+		t.Fatal("no EventPermissionResponded found")
+	})
+}
