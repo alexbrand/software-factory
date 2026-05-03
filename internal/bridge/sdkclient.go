@@ -45,9 +45,16 @@ func NewSDKClientWithHTTP(baseURL string, httpClient *http.Client) *SDKClient {
 
 // ACPConfig holds configuration for creating an ACP session.
 type ACPConfig struct {
-	Agent          string `json:"agent"`
-	WorkDir        string `json:"workDir,omitempty"`
-	PermissionMode string `json:"permissionMode,omitempty"`
+	Agent          string      `json:"agent"`
+	WorkDir        string      `json:"workDir,omitempty"`
+	PermissionMode string      `json:"permissionMode,omitempty"`
+	MCPServers     []MCPServer `json:"mcpServers,omitempty"`
+}
+
+// MCPServer is an MCP endpoint passed to the SDK in session/new.
+type MCPServer struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 // ACPSessionResponse is the response from creating an ACP session.
@@ -180,8 +187,12 @@ func (c *SDKClient) CreateACPSession(ctx context.Context, cfg ACPConfig) (string
 	if cwd == "" {
 		cwd = "/workspace"
 	}
+	mcpServers := cfg.MCPServers
+	if mcpServers == nil {
+		mcpServers = []MCPServer{}
+	}
 	sessionParams := map[string]interface{}{
-		"mcpServers": []interface{}{},
+		"mcpServers": mcpServers,
 		"cwd":        cwd,
 	}
 

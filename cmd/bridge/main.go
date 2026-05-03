@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -60,6 +61,19 @@ func main() {
 
 	// Create session manager.
 	sessionManager := bridge.NewSessionManager(sdkClient, logger)
+
+	// Parse MCP_SERVERS env var (set by the sandbox controller from the Pool's
+	// mcpServers list) and offer those endpoints to every session this bridge
+	// creates.
+	if raw := os.Getenv("MCP_SERVERS"); raw != "" {
+		var servers []bridge.MCPServer
+		if err := json.Unmarshal([]byte(raw), &servers); err != nil {
+			logger.Error("invalid MCP_SERVERS JSON, ignoring", "error", err, "raw", raw)
+		} else {
+			sessionManager.SetMCPServers(servers)
+			logger.Info("loaded MCP servers", "count", len(servers))
+		}
+	}
 
 	// Set up event forwarding if NATS is configured.
 	var eventForwarder *bridge.EventForwarder

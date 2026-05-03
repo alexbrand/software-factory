@@ -89,6 +89,90 @@ func TestCreateACPSession(t *testing.T) {
 	}
 }
 
+func TestCreateACPSessionForwardsMCPServers(t *testing.T) {
+	var sessionNewParams map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpcReq jsonRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&rpcReq); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+		switch rpcReq.Method {
+		case "initialize":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpcReq.ID, Result: json.RawMessage(`{"protocolVersion":1}`)})
+		case "session/new":
+			sessionNewParams = rpcReq.Params.(map[string]interface{})
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpcReq.ID, Result: json.RawMessage(`{"sessionId":"sess-mcp"}`)})
+		case "session/set_config_option":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpcReq.ID, Result: json.RawMessage(`{}`)})
+		}
+	}))
+	defer server.Close()
+
+	client := NewSDKClientWithHTTP(server.URL, server.Client())
+	_, err := client.CreateACPSession(context.Background(), ACPConfig{
+		Agent: "claude-code",
+		MCPServers: []MCPServer{
+			{Name: "github", URL: "http://github-mcp.svc:8080"},
+			{Name: "postgres", URL: "https://postgres-mcp.example.com"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, ok := sessionNewParams["mcpServers"].([]interface{})
+	if !ok {
+		t.Fatalf("expected mcpServers to be a JSON array, got %T", sessionNewParams["mcpServers"])
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 mcpServers, got %d", len(got))
+	}
+	first := got[0].(map[string]interface{})
+	if first["name"] != "github" || first["url"] != "http://github-mcp.svc:8080" {
+		t.Errorf("first mcpServer = %+v, want {name:github, url:http://github-mcp.svc:8080}", first)
+	}
+}
+
+func TestCreateACPSessionEmptyMCPServers(t *testing.T) {
+	var sessionNewParams map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpcReq jsonRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&rpcReq); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+		switch rpcReq.Method {
+		case "initialize":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpcReq.ID, Result: json.RawMessage(`{"protocolVersion":1}`)})
+		case "session/new":
+			sessionNewParams = rpcReq.Params.(map[string]interface{})
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpcReq.ID, Result: json.RawMessage(`{"sessionId":"sess"}`)})
+		case "session/set_config_option":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpcReq.ID, Result: json.RawMessage(`{}`)})
+		}
+	}))
+	defer server.Close()
+
+	client := NewSDKClientWithHTTP(server.URL, server.Client())
+	if _, err := client.CreateACPSession(context.Background(), ACPConfig{Agent: "x"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Nil MCPServers must marshal to [] not null — the SDK rejects null here.
+	got, ok := sessionNewParams["mcpServers"].([]interface{})
+	if !ok {
+		t.Fatalf("expected mcpServers to be a JSON array, got %T (%v)", sessionNewParams["mcpServers"], sessionNewParams["mcpServers"])
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty mcpServers array, got %v", got)
+	}
+}
+
 func TestCreateACPSessionError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

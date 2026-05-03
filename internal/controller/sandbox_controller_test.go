@@ -577,6 +577,108 @@ func TestSandboxReconciler_PodSpec(t *testing.T) {
 	}
 }
 
+func TestSandboxReconciler_MCPServers(t *testing.T) {
+	scheme := newScheme()
+	_ = networkingv1.AddToScheme(scheme)
+
+	pool := newTestPool("test-pool", "default")
+	pool.Spec.SandboxTemplate.MCPServers = []factoryv1alpha1.MCPServerEndpoint{
+		{Name: "github", URL: "http://github-mcp.team-alpha.svc:8080"},
+		{Name: "postgres", URL: "https://postgres-mcp.example.com"},
+	}
+
+	sandbox := newTestSandbox("sb-mcp", "default", "test-pool", "test-agent", "")
+	agentConfig := newAgentConfig("test-agent", "default")
+
+	fc := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(sandbox, pool, agentConfig).
+		WithStatusSubresource(&factoryv1alpha1.Sandbox{}).
+		Build()
+
+	reconciler := &SandboxReconciler{Client: fc, Scheme: scheme}
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "sb-mcp", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	// MCP_SERVERS env var on bridge container, JSON-encoded.
+	var pod corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "sb-mcp", Namespace: "default"}, &pod); err != nil {
+		t.Fatalf("getting pod: %v", err)
+	}
+	bridgeContainer := pod.Spec.Containers[1]
+	var mcpEnv string
+	for _, e := range bridgeContainer.Env {
+		if e.Name == "MCP_SERVERS" {
+			mcpEnv = e.Value
+		}
+	}
+	if mcpEnv == "" {
+		t.Fatal("expected MCP_SERVERS env var on bridge container")
+	}
+	wantJSON := `[{"name":"github","url":"http://github-mcp.team-alpha.svc:8080"},{"name":"postgres","url":"https://postgres-mcp.example.com"}]`
+	if mcpEnv != wantJSON {
+		t.Errorf("MCP_SERVERS = %q, want %q", mcpEnv, wantJSON)
+	}
+
+	// NetworkPolicy: one egress rule per MCP server, port-restricted.
+	var netpol networkingv1.NetworkPolicy
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "sb-mcp-netpol", Namespace: "default"}, &netpol); err != nil {
+		t.Fatalf("getting network policy: %v", err)
+	}
+	// Expect: 1 baseline (DNS+NATS) + 2 MCP rules.
+	if len(netpol.Spec.Egress) != 3 {
+		t.Fatalf("expected 3 egress rules, got %d", len(netpol.Spec.Egress))
+	}
+	gotPorts := []int32{
+		int32(netpol.Spec.Egress[1].Ports[0].Port.IntValue()),
+		int32(netpol.Spec.Egress[2].Ports[0].Port.IntValue()),
+	}
+	if gotPorts[0] != 8080 {
+		t.Errorf("first MCP egress port = %d, want 8080", gotPorts[0])
+	}
+	if gotPorts[1] != 443 {
+		t.Errorf("second MCP egress port = %d, want 443 (default for https)", gotPorts[1])
+	}
+}
+
+func TestSandboxReconciler_MCPServersEmpty(t *testing.T) {
+	scheme := newScheme()
+	_ = networkingv1.AddToScheme(scheme)
+
+	pool := newTestPool("test-pool", "default")
+	// No MCPServers configured.
+	sandbox := newTestSandbox("sb-no-mcp", "default", "test-pool", "test-agent", "")
+	agentConfig := newAgentConfig("test-agent", "default")
+
+	fc := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(sandbox, pool, agentConfig).
+		WithStatusSubresource(&factoryv1alpha1.Sandbox{}).
+		Build()
+
+	reconciler := &SandboxReconciler{Client: fc, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "sb-no-mcp", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var pod corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "sb-no-mcp", Namespace: "default"}, &pod); err != nil {
+		t.Fatalf("getting pod: %v", err)
+	}
+	for _, e := range pod.Spec.Containers[1].Env {
+		if e.Name == "MCP_SERVERS" {
+			t.Errorf("MCP_SERVERS env var should be omitted when no servers configured, got %q", e.Value)
+		}
+	}
+}
+
 func TestSandboxReconciler_NetworkPolicyWithEgressRules(t *testing.T) {
 	scheme := newScheme()
 	_ = networkingv1.AddToScheme(scheme)
