@@ -70,6 +70,19 @@ func main() {
 		if err := json.Unmarshal([]byte(raw), &servers); err != nil {
 			logger.Error("invalid MCP_SERVERS JSON, ignoring", "error", err, "raw", raw)
 		} else {
+			// The Pool CRD models MCP servers as {name, url} only — apply
+			// defaults so the SDK's discriminated-union schema is satisfied.
+			// Streamable-http is the modern default and what newer servers
+			// (everything, time, fetch) speak; explicit headers=[] is required
+			// even when no auth is needed.
+			for i := range servers {
+				if servers[i].Type == "" {
+					servers[i].Type = "http"
+				}
+				if servers[i].Headers == nil {
+					servers[i].Headers = []bridge.MCPHeader{}
+				}
+			}
 			sessionManager.SetMCPServers(servers)
 			logger.Info("loaded MCP servers", "count", len(servers))
 		}

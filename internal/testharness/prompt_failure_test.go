@@ -98,7 +98,9 @@ func TestPromptFailure(t *testing.T) {
 	})
 
 	// === USER EXPECTATION: Session has a clear failure reason ===
-	t.Run("session has failureReason AgentError", func(t *testing.T) {
+	// "Invalid API key" is an auth-shaped error; the session controller
+	// reclassifies it from the generic AgentError to the more useful AuthError.
+	t.Run("session has failureReason AuthError", func(t *testing.T) {
 		var sessions factoryv1alpha1.SessionList
 		if err := h.K8sClient().List(ctx, &sessions, client.InNamespace("prompt-fail-test")); err != nil {
 			t.Fatalf("listing sessions: %v", err)
@@ -112,8 +114,8 @@ func TestPromptFailure(t *testing.T) {
 		if sess.Status.Phase != factoryv1alpha1.SessionPhaseFailed {
 			t.Errorf("expected session phase Failed, got %s", sess.Status.Phase)
 		}
-		if sess.Status.FailureReason != factoryv1alpha1.FailureReasonAgentError {
-			t.Errorf("expected failureReason AgentError, got %q", sess.Status.FailureReason)
+		if sess.Status.FailureReason != factoryv1alpha1.FailureReasonAuthError {
+			t.Errorf("expected failureReason AuthError, got %q", sess.Status.FailureReason)
 		}
 	})
 }
