@@ -81,26 +81,32 @@ spec:
                   by this pool.
                 properties:
                   mcpServers:
-                    description: |-
-                      MCPTools configures MCP tool access via ToolHive.
-                      MCPServers defines MCP tool endpoints available to sandboxes in this pool.
+                    description: MCPServers defines MCP tool endpoints available to
+                      sandboxes in this pool.
                     items:
                       description: MCPServerEndpoint defines an MCP server available
                         to sandboxes.
                       properties:
                         name:
-                          description: Name is a human-readable identifier for this
-                            MCP server.
+                          description: |-
+                            Name is a human-readable identifier for this MCP server.
+                            Must be unique within the pool's MCPServers list.
+                          minLength: 1
                           type: string
                         url:
-                          description: URL is the endpoint where the MCP server is
-                            reachable.
+                          description: |-
+                            URL is the endpoint where the MCP server is reachable.
+                            Must be an http:// or https:// URL.
+                          pattern: ^https?://
                           type: string
                       required:
                       - name
                       - url
                       type: object
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   networkPolicy:
                     description: NetworkPolicy defines network access rules for sandboxes.
                     properties:

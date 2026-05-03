@@ -27,11 +27,10 @@ spec:
       storageClassName: standard
       reclaimPolicy: Delete    # No state worth preserving between tasks
 
-    # MCP tools — provisioned by ToolHive in this example
+    # MCP tools — single endpoint provided by the ToolHive vMCP aggregator,
+    # which fronts both the Google Calendar and Gmail MCP servers.
     mcpServers:
-      - name: google-calendar
-        url: http://assistant-vmcp.personal-assistant.svc:8080
-      - name: gmail
+      - name: assistant-tools
         url: http://assistant-vmcp.personal-assistant.svc:8080
 
     networkPolicy:
