@@ -398,12 +398,12 @@ func TestSessionReconcile(t *testing.T) {
 			}
 
 			if tt.wantRequeue {
-				if result.RequeueAfter == 0 && !result.Requeue {
+				if result.RequeueAfter == 0 {
 					t.Error("expected requeue, got none")
 				}
 			} else {
-				if result.RequeueAfter != 0 || result.Requeue {
-					t.Errorf("expected no requeue, got RequeueAfter=%v Requeue=%v", result.RequeueAfter, result.Requeue)
+				if result.RequeueAfter != 0 {
+					t.Errorf("expected no requeue, got RequeueAfter=%v", result.RequeueAfter)
 				}
 			}
 

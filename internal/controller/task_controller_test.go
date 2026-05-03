@@ -95,7 +95,7 @@ func TestTaskReconciler_PendingClaimsSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
+	if result.RequeueAfter == 0 {
 		t.Error("expected requeue after claiming sandbox")
 	}
 
@@ -244,7 +244,7 @@ func TestTaskReconciler_RunningSessionFailedWithRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
+	if result.RequeueAfter == 0 {
 		t.Error("expected requeue for retry")
 	}
 
@@ -423,7 +423,7 @@ func TestTaskReconciler_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue {
+	if result.RequeueAfter > 0 {
 		t.Error("expected no requeue for not found")
 	}
 }
@@ -452,7 +452,7 @@ func TestTaskReconciler_TerminalPhaseNoOp(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if result.Requeue || result.RequeueAfter > 0 {
+			if result.RequeueAfter > 0 {
 				t.Error("expected no requeue for terminal phase")
 			}
 		})
