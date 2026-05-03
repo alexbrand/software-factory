@@ -52,10 +52,23 @@ type ACPConfig struct {
 	MCPServers     []MCPServer `json:"mcpServers,omitempty"`
 }
 
-// MCPServer is an MCP endpoint passed to the SDK in session/new.
+// MCPServer is an MCP endpoint passed to the SDK in session/new. The
+// SDK's session/new schema is a discriminated union on "type"; for remote
+// servers (the only kind we currently model), Type must be "http" or "sse"
+// and Headers must be present (an empty array is fine when no auth is
+// needed).
 type MCPServer struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	Name    string         `json:"name"`
+	Type    string         `json:"type"`
+	URL     string         `json:"url"`
+	Headers []MCPHeader    `json:"headers"`
+}
+
+// MCPHeader is a {name,value} pair sent on every request to the MCP server.
+// Used for static auth (Bearer tokens, API keys); empty list is valid.
+type MCPHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // ACPSessionResponse is the response from creating an ACP session.
