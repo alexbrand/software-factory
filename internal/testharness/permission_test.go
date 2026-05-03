@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -128,13 +129,26 @@ func TestPermissionGating_RequireApproval(t *testing.T) {
 		return false
 	})
 
-	// Subscribe to NATS to capture permission events.
-	var permissionEvents []events.Event
+	// Subscribe to NATS to capture permission events. The callback runs on a
+	// goroutine, so guard the slice with a mutex to keep -race happy.
+	var (
+		permEventsMu     sync.Mutex
+		permissionEvents []events.Event
+	)
+	snapshotEvents := func() []events.Event {
+		permEventsMu.Lock()
+		defer permEventsMu.Unlock()
+		out := make([]events.Event, len(permissionEvents))
+		copy(out, permissionEvents)
+		return out
+	}
 	permCtx, permCancel := context.WithCancel(ctx)
 	defer permCancel()
 	_, err := h.Subscriber().SubscribeSession(permCtx, "perm-test", ">", func(ev events.Event) {
 		if ev.Type == events.EventPermissionRequested || ev.Type == events.EventPermissionResponded {
+			permEventsMu.Lock()
 			permissionEvents = append(permissionEvents, ev)
+			permEventsMu.Unlock()
 		}
 	})
 	if err != nil {
@@ -182,7 +196,7 @@ func TestPermissionGating_RequireApproval(t *testing.T) {
 	// === ASSERT: EventPermissionRequested published to NATS ===
 	t.Run("permission requested event in NATS", func(t *testing.T) {
 		testharness.WaitFor(t, 10*time.Second, 200*time.Millisecond, func() bool {
-			for _, ev := range permissionEvents {
+			for _, ev := range snapshotEvents() {
 				if ev.Type == events.EventPermissionRequested {
 					return true
 				}
@@ -238,7 +252,7 @@ func TestPermissionGating_RequireApproval(t *testing.T) {
 	// === ASSERT: EventPermissionResponded published to NATS ===
 	t.Run("permission responded event in NATS", func(t *testing.T) {
 		testharness.WaitFor(t, 10*time.Second, 200*time.Millisecond, func() bool {
-			for _, ev := range permissionEvents {
+			for _, ev := range snapshotEvents() {
 				if ev.Type == events.EventPermissionResponded {
 					return true
 				}
@@ -305,13 +319,26 @@ func TestPermissionGating_AutoApprove(t *testing.T) {
 		PromptDelay: 30 * time.Second,
 	})
 
-	// Subscribe to NATS to capture permission events.
-	var permissionEvents []events.Event
+	// Subscribe to NATS to capture permission events. The callback runs on a
+	// goroutine, so guard the slice with a mutex to keep -race happy.
+	var (
+		permEventsMu sync.Mutex
+		permissionEvents []events.Event
+	)
+	snapshotEvents := func() []events.Event {
+		permEventsMu.Lock()
+		defer permEventsMu.Unlock()
+		out := make([]events.Event, len(permissionEvents))
+		copy(out, permissionEvents)
+		return out
+	}
 	permCtx, permCancel := context.WithCancel(ctx)
 	defer permCancel()
 	_, err := h.Subscriber().SubscribeSession(permCtx, "auto-approve-test", ">", func(ev events.Event) {
 		if ev.Type == events.EventPermissionRequested || ev.Type == events.EventPermissionResponded {
+			permEventsMu.Lock()
 			permissionEvents = append(permissionEvents, ev)
+			permEventsMu.Unlock()
 		}
 	})
 	if err != nil {
@@ -366,18 +393,20 @@ func TestPermissionGating_AutoApprove(t *testing.T) {
 		t.Fatalf("pushing SSE event: %v", err)
 	}
 
-	// === ASSERT: Session stays Active (not WaitingForApproval) ===
-	t.Run("session stays Active", func(t *testing.T) {
-		// Give the bridge a moment to process the event.
-		time.Sleep(1 * time.Second)
-
-		var s factoryv1alpha1.Session
-		if err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s); err != nil {
-			t.Fatalf("getting session: %v", err)
-		}
-		if s.Status.Phase != factoryv1alpha1.SessionPhaseActive {
-			t.Errorf("expected session to stay Active, got %s", s.Status.Phase)
-		}
+	// === ASSERT: Session settles back to Active after auto-approval ===
+	// The bridge publishes EventPermissionRequested and EventPermissionResponded
+	// back-to-back for autoApprove, so the session controller may flip through
+	// WaitingForApproval briefly while processing the events. What matters for
+	// the user is the steady state — once both events drain, the session must
+	// be Active again, with no PendingApproval set.
+	t.Run("session settles back to Active", func(t *testing.T) {
+		testharness.WaitFor(t, 5*time.Second, 100*time.Millisecond, func() bool {
+			var s factoryv1alpha1.Session
+			if err := h.K8sClient().Get(ctx, client.ObjectKeyFromObject(session), &s); err != nil {
+				return false
+			}
+			return s.Status.Phase == factoryv1alpha1.SessionPhaseActive && s.Status.PendingApproval == nil
+		})
 	})
 
 	// === ASSERT: Both permission events published to NATS ===
@@ -385,7 +414,7 @@ func TestPermissionGating_AutoApprove(t *testing.T) {
 		testharness.WaitFor(t, 10*time.Second, 200*time.Millisecond, func() bool {
 			hasReq := false
 			hasResp := false
-			for _, ev := range permissionEvents {
+			for _, ev := range snapshotEvents() {
 				if ev.Type == events.EventPermissionRequested {
 					hasReq = true
 				}
@@ -399,7 +428,7 @@ func TestPermissionGating_AutoApprove(t *testing.T) {
 
 	// === ASSERT: Response has decision=allow and respondedBy=bridge:autoApprove ===
 	t.Run("response is auto-approved", func(t *testing.T) {
-		for _, ev := range permissionEvents {
+		for _, ev := range snapshotEvents() {
 			if ev.Type == events.EventPermissionResponded {
 				var data events.PermissionResponseData
 				if err := json.Unmarshal(ev.Data, &data); err != nil {

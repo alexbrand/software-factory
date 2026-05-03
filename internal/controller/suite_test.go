@@ -13,6 +13,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
 )
@@ -66,6 +67,11 @@ func TestIntegration(t *testing.T) {
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
+		// Disable the metrics server in tests. Its default :8080 bind clashes
+		// with anything else the developer is running locally and crashes the
+		// manager silently — controllers never start, the cache stalls, and
+		// every cached List eventually times out.
+		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
 		t.Fatalf("creating manager: %v", err)
@@ -106,17 +112,32 @@ func TestIntegration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	mgrErrCh := make(chan error, 1)
 	go func() {
-		if err := mgr.Start(ctx); err != nil {
-			_ = err
-		}
+		mgrErrCh <- mgr.Start(ctx)
 	}()
 
 	if !mgr.GetCache().WaitForCacheSync(ctx) {
 		t.Fatal("waiting for cache sync")
 	}
 
-	k8sClient := mgr.GetClient()
+	select {
+	case err := <-mgrErrCh:
+		t.Fatalf("manager exited unexpectedly: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		// manager still running
+	}
+
+	// Use a direct (non-cached) client for assertions. The manager's cached
+	// client only serves types that have an informer registered before
+	// mgr.Start; types added later (e.g. Pod, queried lazily by test code)
+	// fail to sync because their informer is added to a running cache.
+	// Reconcilers still use mgr.GetClient() — that path goes through their
+	// pre-registered watches.
+	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatalf("creating direct client: %v", err)
+	}
 
 	t.Run("PoolCreatesSandboxes", func(t *testing.T) {
 		ns := "test-pool-creates"
