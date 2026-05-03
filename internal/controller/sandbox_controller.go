@@ -103,7 +103,7 @@ func (r *SandboxReconciler) reconcileCreating(ctx context.Context, sandbox *fact
 	}
 
 	// Create NetworkPolicy if it doesn't exist
-	if err := r.ensureNetworkPolicy(ctx, sandbox, pool); err != nil {
+	if err := r.ensureNetworkPolicy(ctx, sandbox, pool, agentConfig); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring network policy: %w", err)
 	}
 
@@ -348,7 +348,7 @@ func (r *SandboxReconciler) ensureWorkspacePVC(ctx context.Context, sandbox *fac
 	return nil
 }
 
-func (r *SandboxReconciler) ensureNetworkPolicy(ctx context.Context, sandbox *factoryv1alpha1.Sandbox, pool *factoryv1alpha1.Pool) error {
+func (r *SandboxReconciler) ensureNetworkPolicy(ctx context.Context, sandbox *factoryv1alpha1.Sandbox, pool *factoryv1alpha1.Pool, agentConfig *factoryv1alpha1.AgentConfig) error {
 	netpolName := sandbox.Name + "-netpol"
 
 	var existing networkingv1.NetworkPolicy
@@ -421,6 +421,30 @@ func (r *SandboxReconciler) ensureNetworkPolicy(ctx context.Context, sandbox *fa
 				{Port: &p, Protocol: &protocolTCP},
 			},
 		})
+	}
+
+	// Allow HTTPS egress to each AgentConfig credential host. Without this,
+	// a Pool whose AgentConfig declares e.g. host=api.openai.com but whose
+	// Pool spec doesn't list a matching EgressRule would silently fail —
+	// the agent can't reach its own API. Hostname filtering isn't supported
+	// in NetworkPolicy, so this is port-restricted (443) against 0.0.0.0/0.
+	if agentConfig != nil {
+		seen := map[string]bool{}
+		for _, cred := range agentConfig.Spec.Credentials {
+			if cred.Host == nil || *cred.Host == "" || seen[*cred.Host] {
+				continue
+			}
+			seen[*cred.Host] = true
+			httpsPort := intstr.FromInt32(443)
+			egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+				To: []networkingv1.NetworkPolicyPeer{
+					{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}},
+				},
+				Ports: []networkingv1.NetworkPolicyPort{
+					{Port: &httpsPort, Protocol: &protocolTCP},
+				},
+			})
+		}
 	}
 
 	policyTypes := []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}

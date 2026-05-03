@@ -261,10 +261,19 @@ func (r *TaskReconciler) handleSessionResult(ctx context.Context, task *factoryv
 			return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 		}
 
-		// Exceeded retries, fail the task.
+		// Exceeded retries, fail the task. Propagate the session's failure
+		// reason and message so the user-facing API can show *why* without
+		// requiring a separate Session lookup.
 		now := metav1.Now()
 		task.Status.Phase = factoryv1alpha1.TaskPhaseFailed
 		task.Status.CompletedAt = &now
+		if task.Status.SessionRef != nil {
+			var s factoryv1alpha1.Session
+			if err := r.Get(ctx, client.ObjectKey{Namespace: task.Namespace, Name: task.Status.SessionRef.Name}, &s); err == nil {
+				task.Status.FailureReason = s.Status.FailureReason
+				task.Status.FailureMessage = s.Status.FailureMessage
+			}
+		}
 		if err := r.Status().Update(ctx, task); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating task to Failed: %w", err)
 		}
@@ -307,6 +316,8 @@ func (r *TaskReconciler) handleTimeout(ctx context.Context, task *factoryv1alpha
 
 	now := metav1.Now()
 	task.Status.Phase = factoryv1alpha1.TaskPhaseFailed
+	task.Status.FailureReason = factoryv1alpha1.FailureReasonTimeout
+	task.Status.FailureMessage = "task exceeded its spec.timeout"
 	task.Status.CompletedAt = &now
 	if err := r.Status().Update(ctx, task); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating task to Failed on timeout: %w", err)

@@ -41,17 +41,19 @@ type CreateTaskRequest struct {
 
 // TaskResponse is the response for task endpoints.
 type TaskResponse struct {
-	ID          string                       `json:"id"`
-	Name        string                       `json:"name"`
-	Namespace   string                       `json:"namespace"`
-	Phase       string                       `json:"phase"`
-	SandboxRef  string                       `json:"sandboxRef,omitempty"`
-	SessionRef  string                       `json:"sessionRef,omitempty"`
-	Attempts    int32                        `json:"attempts"`
-	StartedAt   *time.Time                   `json:"startedAt,omitempty"`
-	CompletedAt *time.Time                   `json:"completedAt,omitempty"`
-	TokenUsage  *factoryv1alpha1.TokenUsage  `json:"tokenUsage,omitempty"`
-	CreatedAt   time.Time                    `json:"createdAt"`
+	ID             string                      `json:"id"`
+	Name           string                      `json:"name"`
+	Namespace      string                      `json:"namespace"`
+	Phase          string                      `json:"phase"`
+	SandboxRef     string                      `json:"sandboxRef,omitempty"`
+	SessionRef     string                      `json:"sessionRef,omitempty"`
+	Attempts       int32                       `json:"attempts"`
+	FailureReason  string                      `json:"failureReason,omitempty"`
+	FailureMessage string                      `json:"failureMessage,omitempty"`
+	StartedAt      *time.Time                  `json:"startedAt,omitempty"`
+	CompletedAt    *time.Time                  `json:"completedAt,omitempty"`
+	TokenUsage     *factoryv1alpha1.TokenUsage `json:"tokenUsage,omitempty"`
+	CreatedAt      time.Time                   `json:"createdAt"`
 }
 
 // PoolResponse is the response for pool endpoints.
@@ -138,13 +140,15 @@ func workflowFromCR(w *factoryv1alpha1.Workflow) WorkflowResponse {
 // taskFromCR converts a Task CR to a TaskResponse.
 func taskFromCR(t *factoryv1alpha1.Task) TaskResponse {
 	resp := TaskResponse{
-		ID:         string(t.UID),
-		Name:       t.Name,
-		Namespace:  t.Namespace,
-		Phase:      string(t.Status.Phase),
-		Attempts:   t.Status.Attempts,
-		TokenUsage: t.Status.TokenUsage,
-		CreatedAt:  t.CreationTimestamp.Time,
+		ID:             string(t.UID),
+		Name:           t.Name,
+		Namespace:      t.Namespace,
+		Phase:          string(t.Status.Phase),
+		Attempts:       t.Status.Attempts,
+		FailureReason:  string(t.Status.FailureReason),
+		FailureMessage: t.Status.FailureMessage,
+		TokenUsage:     t.Status.TokenUsage,
+		CreatedAt:      t.CreationTimestamp.Time,
 	}
 	if t.Status.SandboxRef != nil {
 		resp.SandboxRef = t.Status.SandboxRef.Name

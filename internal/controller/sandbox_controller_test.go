@@ -679,6 +679,51 @@ func TestSandboxReconciler_MCPServersEmpty(t *testing.T) {
 	}
 }
 
+func TestSandboxReconciler_NetworkPolicyFromCredentialHost(t *testing.T) {
+	scheme := newScheme()
+	_ = networkingv1.AddToScheme(scheme)
+
+	pool := newTestPool("test-pool", "default")
+	host1, host2 := "api.openai.com", "api.openai.com" // same host, dedup expected
+	host3 := "api.example.com"
+	agentConfig := newAgentConfig("test-agent", "default")
+	agentConfig.Spec.Credentials = []factoryv1alpha1.CredentialConfig{
+		{Name: "OPENAI_API_KEY", Host: &host1, SecretRef: factoryv1alpha1.SecretKeyReference{Name: "creds", Key: "k"}},
+		{Name: "OPENAI_ORG_ID", Host: &host2, SecretRef: factoryv1alpha1.SecretKeyReference{Name: "creds", Key: "org"}},
+		{Name: "EXAMPLE_TOKEN", Host: &host3, SecretRef: factoryv1alpha1.SecretKeyReference{Name: "creds", Key: "tok"}},
+	}
+
+	sandbox := newTestSandbox("sb-creds", "default", "test-pool", "test-agent", "")
+
+	fc := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(sandbox, pool, agentConfig).
+		WithStatusSubresource(&factoryv1alpha1.Sandbox{}).
+		Build()
+
+	r := &SandboxReconciler{Client: fc, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "sb-creds", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	var netpol networkingv1.NetworkPolicy
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "sb-creds-netpol", Namespace: "default"}, &netpol); err != nil {
+		t.Fatalf("getting netpol: %v", err)
+	}
+
+	// Baseline (DNS+NATS) + 2 deduped credential hosts = 3.
+	if got := len(netpol.Spec.Egress); got != 3 {
+		t.Fatalf("expected 3 egress rules, got %d", got)
+	}
+	for _, rule := range netpol.Spec.Egress[1:] {
+		if len(rule.Ports) != 1 || rule.Ports[0].Port.IntValue() != 443 {
+			t.Errorf("expected credential egress rule on port 443, got %+v", rule.Ports)
+		}
+	}
+}
+
 func TestSandboxReconciler_NetworkPolicyWithEgressRules(t *testing.T) {
 	scheme := newScheme()
 	_ = networkingv1.AddToScheme(scheme)

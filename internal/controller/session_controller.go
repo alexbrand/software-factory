@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,16 @@ import (
 const (
 	sessionHealthCheckInterval = 15 * time.Second
 	bridgePort                 = 8080
+
+	// maxStartAttempts caps how long the session controller keeps retrying
+	// bridge.StartSession before giving up with phase=Failed. With the
+	// exponential backoff schedule (10s, 20s, 40s, 80s, 160s, 300s capped)
+	// this is roughly 10 minutes of retries for transient failures.
+	maxStartAttempts = 6
+
+	// maxStartBackoff caps the per-retry RequeueAfter so a stuck session
+	// still gets reconciled occasionally.
+	maxStartBackoff = 5 * time.Minute
 )
 
 // BridgeClientFactory creates bridge clients for a given base URL.
@@ -131,7 +142,7 @@ func (r *SessionReconciler) reconcilePending(ctx context.Context, session *facto
 	bridgeSessionID, err := bridgeClient.StartSession(ctx, cfg)
 	if err != nil {
 		logger.Error(err, "failed to start session on bridge")
-		return ctrl.Result{RequeueAfter: defaultRequeueDelay}, nil
+		return r.handleStartSessionError(ctx, session, err)
 	}
 
 	// Update session status to Active.
@@ -155,6 +166,74 @@ func (r *SessionReconciler) reconcilePending(ctx context.Context, session *facto
 	}
 
 	return ctrl.Result{RequeueAfter: sessionHealthCheckInterval}, nil
+}
+
+// handleStartSessionError classifies a bridge.StartSession error and decides
+// whether to retry, back off, or fail the session terminally.
+//
+// Auth-shaped errors (invalid API key, missing auth method) are terminal —
+// retrying with the same credentials won't change anything. Everything else
+// is treated as transient and gets exponential backoff up to maxStartAttempts.
+func (r *SessionReconciler) handleStartSessionError(ctx context.Context, session *factoryv1alpha1.Session, startErr error) (ctrl.Result, error) {
+	msg := startErr.Error()
+
+	if isAuthError(msg) {
+		now := metav1.Now()
+		session.Status.Phase = factoryv1alpha1.SessionPhaseFailed
+		session.Status.FailureReason = factoryv1alpha1.FailureReasonAuthError
+		session.Status.FailureMessage = msg
+		session.Status.CompletedAt = &now
+		if err := r.Status().Update(ctx, session); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating session to Failed (auth): %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	session.Status.StartAttempts++
+	if session.Status.StartAttempts >= maxStartAttempts {
+		now := metav1.Now()
+		session.Status.Phase = factoryv1alpha1.SessionPhaseFailed
+		session.Status.FailureReason = factoryv1alpha1.FailureReasonAgentError
+		session.Status.FailureMessage = fmt.Sprintf("bridge.StartSession failed %d times: %s", session.Status.StartAttempts, msg)
+		session.Status.CompletedAt = &now
+		if err := r.Status().Update(ctx, session); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating session to Failed (max attempts): %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.Status().Update(ctx, session); err != nil {
+		return ctrl.Result{}, fmt.Errorf("incrementing startAttempts: %w", err)
+	}
+
+	// Exponential backoff: 10s, 20s, 40s, 80s, 160s, 300s.
+	backoff := time.Duration(1<<session.Status.StartAttempts) * 10 * time.Second
+	if backoff > maxStartBackoff {
+		backoff = maxStartBackoff
+	}
+	return ctrl.Result{RequeueAfter: backoff}, nil
+}
+
+// isAuthError returns true for bridge errors that indicate the agent could
+// not authenticate to its provider — retrying with the same credentials is
+// pointless. Matches the wire messages we've actually seen from Codex,
+// Claude, and the bridge's own ACP layer.
+func isAuthError(msg string) bool {
+	patterns := []string{
+		"Authentication required",   // codex initial session/new without authenticate
+		"Invalid API key",           // claude / generic anthropic
+		"invalid_api_key",           // openai variant
+		"Incorrect API key",         // openai
+		"401 Unauthorized",
+		"403 Forbidden",
+		"ACP authenticate",          // our own bridge wrapping of authenticate failures
+	}
+	for _, p := range patterns {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // getPermissionMode looks up the AgentConfig for the session's agent type
@@ -293,7 +372,15 @@ func (r *SessionReconciler) handleSessionFailed(namespace, sessionName string, e
 	now := metav1.Now()
 	session.Status.Phase = factoryv1alpha1.SessionPhaseFailed
 	session.Status.CompletedAt = &now
-	session.Status.FailureReason = factoryv1alpha1.FailureReasonAgentError
+	// Async failures (model API rejection during prompt) come in as AgentError;
+	// reclassify when the message looks like an auth issue so the API surfaces
+	// the more useful AuthError reason.
+	if isAuthError(data.Reason) {
+		session.Status.FailureReason = factoryv1alpha1.FailureReasonAuthError
+	} else {
+		session.Status.FailureReason = factoryv1alpha1.FailureReasonAgentError
+	}
+	session.Status.FailureMessage = data.Reason
 	_ = r.Status().Update(ctx, &session)
 }
 

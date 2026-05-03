@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -180,7 +181,20 @@ func (c *SDKClient) CreateACPSession(ctx context.Context, cfg ACPConfig) (string
 	if err != nil {
 		return "", fmt.Errorf("ACP initialize: %w", err)
 	}
-	_ = initResp
+
+	// Step 1b: If the agent declared auth methods (Codex etc.), pick one and
+	// run `authenticate` before session/new. Claude returns an empty list and
+	// auto-auths from ANTHROPIC_API_KEY; this branch is a no-op for it.
+	if methodID := chooseAuthMethod(initResp.Result); methodID != "" {
+		if _, err := c.sendRPC(ctx, acpURL, jsonRPCRequest{
+			JSONRPC: "2.0",
+			ID:      c.nextID.Add(1),
+			Method:  "authenticate",
+			Params:  map[string]interface{}{"methodId": methodID},
+		}); err != nil {
+			return "", fmt.Errorf("ACP authenticate (methodId=%s): %w", methodID, err)
+		}
+	}
 
 	// Step 2: Create a new session.
 	cwd := cfg.WorkDir
@@ -256,6 +270,47 @@ func (c *SDKClient) getSessionID(serverID string) string {
 	sessionIDMap.RLock()
 	defer sessionIDMap.RUnlock()
 	return sessionIDMap.m[serverID]
+}
+
+// chooseAuthMethod inspects the result of `initialize` and returns the methodId
+// to pass to `authenticate`, or "" if the agent doesn't require it. Prefers
+// env-var methods whose required env vars are set in this process; falls back
+// to the first env-var method so the resulting authenticate error is clearer
+// than a downstream "Authentication required" from session/new.
+func chooseAuthMethod(initResult json.RawMessage) string {
+	var r struct {
+		AuthMethods []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Vars []struct {
+				Name string `json:"name"`
+			} `json:"vars"`
+		} `json:"authMethods"`
+	}
+	if err := json.Unmarshal(initResult, &r); err != nil || len(r.AuthMethods) == 0 {
+		return ""
+	}
+	for _, m := range r.AuthMethods {
+		if m.Type != "env_var" || len(m.Vars) == 0 {
+			continue
+		}
+		allSet := true
+		for _, v := range m.Vars {
+			if os.Getenv(v.Name) == "" {
+				allSet = false
+				break
+			}
+		}
+		if allSet {
+			return m.ID
+		}
+	}
+	for _, m := range r.AuthMethods {
+		if m.Type == "env_var" {
+			return m.ID
+		}
+	}
+	return ""
 }
 
 // SendACPMessage sends a prompt to an active ACP session using the session/prompt method.

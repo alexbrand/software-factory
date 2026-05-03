@@ -172,6 +172,21 @@ spec:
                   - type
                   type: object
                 type: array
+              failureMessage:
+                description: |-
+                  FailureMessage is a human-readable description of the failure,
+                  propagated from the session. Set only when Phase is Failed.
+                type: string
+              failureReason:
+                description: |-
+                  FailureReason indicates why the task failed, propagated from the
+                  session that ran it. Set only when Phase is Failed.
+                enum:
+                - AgentError
+                - Timeout
+                - BridgeLost
+                - AuthError
+                type: string
               phase:
                 description: Phase is the current phase of the task.
                 enum:
