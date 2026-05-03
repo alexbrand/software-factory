@@ -372,7 +372,15 @@ func (r *SessionReconciler) handleSessionFailed(namespace, sessionName string, e
 	now := metav1.Now()
 	session.Status.Phase = factoryv1alpha1.SessionPhaseFailed
 	session.Status.CompletedAt = &now
-	session.Status.FailureReason = factoryv1alpha1.FailureReasonAgentError
+	// Async failures (model API rejection during prompt) come in as AgentError;
+	// reclassify when the message looks like an auth issue so the API surfaces
+	// the more useful AuthError reason.
+	if isAuthError(data.Reason) {
+		session.Status.FailureReason = factoryv1alpha1.FailureReasonAuthError
+	} else {
+		session.Status.FailureReason = factoryv1alpha1.FailureReasonAgentError
+	}
+	session.Status.FailureMessage = data.Reason
 	_ = r.Status().Update(ctx, &session)
 }
 
