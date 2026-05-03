@@ -158,6 +158,11 @@ spec:
                 description: EventStreamSubject is the NATS subject for this session's
                   event stream.
                 type: string
+              failureMessage:
+                description: |-
+                  FailureMessage is a human-readable description of the failure.
+                  Set only when Phase is Failed.
+                type: string
               failureReason:
                 description: |-
                   FailureReason indicates why the session failed.
@@ -166,6 +171,7 @@ spec:
                 - AgentError
                 - Timeout
                 - BridgeLost
+                - AuthError
                 type: string
               pendingApproval:
                 description: |-
@@ -201,6 +207,13 @@ spec:
                 - Failed
                 - Cancelled
                 type: string
+              startAttempts:
+                description: |-
+                  StartAttempts counts how many times the session controller has tried
+                  to start this session on the bridge. Used to bound retries on
+                  transient bridge failures.
+                format: int32
+                type: integer
               startedAt:
                 description: StartedAt is the time the session started.
                 format: date-time

@@ -34,7 +34,7 @@ type PendingApproval struct {
 }
 
 // FailureReason indicates why a session entered the Failed phase.
-// +kubebuilder:validation:Enum=AgentError;Timeout;BridgeLost
+// +kubebuilder:validation:Enum=AgentError;Timeout;BridgeLost;AuthError
 type FailureReason string
 
 const (
@@ -46,6 +46,11 @@ const (
 
 	// FailureReasonBridgeLost means the bridge became unreachable.
 	FailureReasonBridgeLost FailureReason = "BridgeLost"
+
+	// FailureReasonAuthError means the agent could not authenticate to its
+	// upstream provider (invalid/expired API key, missing auth method).
+	// Terminal — no point retrying without operator intervention.
+	FailureReasonAuthError FailureReason = "AuthError"
 )
 
 // SessionMode controls whether a session auto-completes after a single prompt
@@ -113,6 +118,17 @@ type SessionStatus struct {
 	// Set only when Phase is Failed.
 	// +optional
 	FailureReason FailureReason `json:"failureReason,omitempty"`
+
+	// FailureMessage is a human-readable description of the failure.
+	// Set only when Phase is Failed.
+	// +optional
+	FailureMessage string `json:"failureMessage,omitempty"`
+
+	// StartAttempts counts how many times the session controller has tried
+	// to start this session on the bridge. Used to bound retries on
+	// transient bridge failures.
+	// +optional
+	StartAttempts int32 `json:"startAttempts,omitempty"`
 
 	// EventStreamSubject is the NATS subject for this session's event stream.
 	// +optional

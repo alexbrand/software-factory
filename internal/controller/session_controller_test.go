@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -442,5 +443,115 @@ func TestSessionReconcile(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIsAuthError(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"creating ACP session: ACP session/new: JSON-RPC error -32000: Authentication required", true},
+		{"ACP session/prompt: JSON-RPC error -32603: Internal error: Invalid API key · Fix external API key", true},
+		{"openai: invalid_api_key: Incorrect API key provided", true},
+		{"401 Unauthorized", true},
+		{"ACP authenticate (methodId=openai-api-key): JSON-RPC error -32000: bad creds", true},
+		{"i/o timeout", false},
+		{"connection refused", false},
+		{"some other transient error", false},
+	}
+	for _, tc := range cases {
+		got := isAuthError(tc.msg)
+		if got != tc.want {
+			t.Errorf("isAuthError(%q) = %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+}
+
+func TestHandleStartSessionError_AuthIsTerminal(t *testing.T) {
+	session := &factoryv1alpha1.Session{
+		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+		Spec:       factoryv1alpha1.SessionSpec{AgentType: "codex"},
+		Status:     factoryv1alpha1.SessionStatus{Phase: factoryv1alpha1.SessionPhasePending},
+	}
+	r := newSessionReconciler([]client.Object{session}, &fakeBridgeClient{}, nil)
+
+	// Re-fetch so we mutate the persisted version.
+	var s factoryv1alpha1.Session
+	_ = r.Get(context.Background(), types.NamespacedName{Name: "s", Namespace: "default"}, &s)
+
+	res, err := r.handleStartSessionError(context.Background(), &s, fmt.Errorf("ACP session/new: JSON-RPC error -32000: Authentication required"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("expected no requeue on auth error, got %v", res.RequeueAfter)
+	}
+
+	var updated factoryv1alpha1.Session
+	_ = r.Get(context.Background(), types.NamespacedName{Name: "s", Namespace: "default"}, &updated)
+	if updated.Status.Phase != factoryv1alpha1.SessionPhaseFailed {
+		t.Errorf("phase = %q, want Failed", updated.Status.Phase)
+	}
+	if updated.Status.FailureReason != factoryv1alpha1.FailureReasonAuthError {
+		t.Errorf("failureReason = %q, want AuthError", updated.Status.FailureReason)
+	}
+	if updated.Status.FailureMessage == "" {
+		t.Error("failureMessage should be populated")
+	}
+}
+
+func TestHandleStartSessionError_TransientBacksOff(t *testing.T) {
+	session := &factoryv1alpha1.Session{
+		ObjectMeta: metav1.ObjectMeta{Name: "s2", Namespace: "default"},
+		Spec:       factoryv1alpha1.SessionSpec{AgentType: "claude"},
+		Status:     factoryv1alpha1.SessionStatus{Phase: factoryv1alpha1.SessionPhasePending, StartAttempts: 2},
+	}
+	r := newSessionReconciler([]client.Object{session}, &fakeBridgeClient{}, nil)
+
+	var s factoryv1alpha1.Session
+	_ = r.Get(context.Background(), types.NamespacedName{Name: "s2", Namespace: "default"}, &s)
+
+	res, err := r.handleStartSessionError(context.Background(), &s, fmt.Errorf("connection refused"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 1 << 3 * 10s = 80s after this attempt.
+	if res.RequeueAfter < 60*time.Second || res.RequeueAfter > 100*time.Second {
+		t.Errorf("expected ~80s backoff, got %v", res.RequeueAfter)
+	}
+
+	var updated factoryv1alpha1.Session
+	_ = r.Get(context.Background(), types.NamespacedName{Name: "s2", Namespace: "default"}, &updated)
+	if updated.Status.Phase == factoryv1alpha1.SessionPhaseFailed {
+		t.Error("transient error should not transition to Failed yet")
+	}
+	if updated.Status.StartAttempts != 3 {
+		t.Errorf("startAttempts = %d, want 3", updated.Status.StartAttempts)
+	}
+}
+
+func TestHandleStartSessionError_ExceedsMaxAttempts(t *testing.T) {
+	session := &factoryv1alpha1.Session{
+		ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: "default"},
+		Spec:       factoryv1alpha1.SessionSpec{AgentType: "claude"},
+		Status:     factoryv1alpha1.SessionStatus{Phase: factoryv1alpha1.SessionPhasePending, StartAttempts: maxStartAttempts - 1},
+	}
+	r := newSessionReconciler([]client.Object{session}, &fakeBridgeClient{}, nil)
+
+	var s factoryv1alpha1.Session
+	_ = r.Get(context.Background(), types.NamespacedName{Name: "s3", Namespace: "default"}, &s)
+
+	if _, err := r.handleStartSessionError(context.Background(), &s, fmt.Errorf("connection refused")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var updated factoryv1alpha1.Session
+	_ = r.Get(context.Background(), types.NamespacedName{Name: "s3", Namespace: "default"}, &updated)
+	if updated.Status.Phase != factoryv1alpha1.SessionPhaseFailed {
+		t.Errorf("phase = %q, want Failed after max attempts", updated.Status.Phase)
+	}
+	if updated.Status.FailureReason != factoryv1alpha1.FailureReasonAgentError {
+		t.Errorf("failureReason = %q, want AgentError", updated.Status.FailureReason)
 	}
 }
