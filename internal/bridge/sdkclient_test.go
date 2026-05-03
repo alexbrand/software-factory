@@ -89,6 +89,125 @@ func TestCreateACPSession(t *testing.T) {
 	}
 }
 
+func TestCreateACPSession_Authenticate(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+
+	var sawAuthenticate bool
+	var authParams map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpc jsonRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decoding request: %v", err)
+		}
+		switch rpc.Method {
+		case "initialize":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0", ID: rpc.ID,
+				Result: json.RawMessage(`{
+					"protocolVersion": 1,
+					"authMethods": [
+						{"id":"chatgpt","name":"Login with ChatGPT"},
+						{"id":"openai-api-key","type":"env_var","vars":[{"name":"OPENAI_API_KEY"}]}
+					]
+				}`),
+			})
+		case "authenticate":
+			sawAuthenticate = true
+			authParams = rpc.Params.(map[string]interface{})
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpc.ID, Result: json.RawMessage(`{}`)})
+		case "session/new":
+			if !sawAuthenticate {
+				t.Errorf("session/new called before authenticate")
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpc.ID, Result: json.RawMessage(`{"sessionId":"s"}`)})
+		case "session/set_config_option":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpc.ID, Result: json.RawMessage(`{}`)})
+		}
+	}))
+	defer server.Close()
+
+	c := NewSDKClientWithHTTP(server.URL, server.Client())
+	if _, err := c.CreateACPSession(context.Background(), ACPConfig{Agent: "codex"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !sawAuthenticate {
+		t.Fatal("expected authenticate to be called")
+	}
+	if got := authParams["methodId"]; got != "openai-api-key" {
+		t.Errorf("methodId = %v, want openai-api-key", got)
+	}
+}
+
+func TestCreateACPSession_NoAuthMethods(t *testing.T) {
+	// Claude: empty authMethods list — should NOT call authenticate.
+	var sawAuthenticate bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpc jsonRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decoding: %v", err)
+		}
+		switch rpc.Method {
+		case "initialize":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpc.ID, Result: json.RawMessage(`{"protocolVersion":1,"authMethods":[]}`)})
+		case "authenticate":
+			sawAuthenticate = true
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpc.ID, Result: json.RawMessage(`{}`)})
+		case "session/new":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpc.ID, Result: json.RawMessage(`{"sessionId":"s"}`)})
+		case "session/set_config_option":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{JSONRPC: "2.0", ID: rpc.ID, Result: json.RawMessage(`{}`)})
+		}
+	}))
+	defer server.Close()
+
+	c := NewSDKClientWithHTTP(server.URL, server.Client())
+	if _, err := c.CreateACPSession(context.Background(), ACPConfig{Agent: "claude"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sawAuthenticate {
+		t.Error("authenticate must not be called when authMethods is empty")
+	}
+}
+
+func TestChooseAuthMethod(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	t.Setenv("CODEX_API_KEY", "")
+
+	tests := []struct {
+		name string
+		init string
+		want string
+	}{
+		{"empty list", `{"authMethods":[]}`, ""},
+		{"only chatgpt", `{"authMethods":[{"id":"chatgpt","name":"Login"}]}`, ""},
+		{"prefer env var with set value", `{"authMethods":[
+			{"id":"codex-api-key","type":"env_var","vars":[{"name":"CODEX_API_KEY"}]},
+			{"id":"openai-api-key","type":"env_var","vars":[{"name":"OPENAI_API_KEY"}]}
+		]}`, "openai-api-key"},
+		{"fall back to first env_var when none set", `{"authMethods":[
+			{"id":"chatgpt"},
+			{"id":"codex-api-key","type":"env_var","vars":[{"name":"CODEX_API_KEY"}]}
+		]}`, "codex-api-key"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := chooseAuthMethod(json.RawMessage(tc.init))
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCreateACPSessionForwardsMCPServers(t *testing.T) {
 	var sessionNewParams map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
