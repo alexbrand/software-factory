@@ -9,8 +9,9 @@ import (
 
 // SessionManager manages agent sessions via the Sandbox Agent SDK.
 type SessionManager struct {
-	sdk    *SDKClient
-	logger *slog.Logger
+	sdk        *SDKClient
+	logger     *slog.Logger
+	mcpServers []MCPServer
 
 	mu       sync.RWMutex
 	sessions map[string]*sessionState
@@ -29,6 +30,12 @@ func NewSessionManager(sdk *SDKClient, logger *slog.Logger) *SessionManager {
 		logger:   logger,
 		sessions: make(map[string]*sessionState),
 	}
+}
+
+// SetMCPServers configures the MCP server endpoints offered to every session
+// this manager creates. Pool-level config — set once at bridge startup.
+func (m *SessionManager) SetMCPServers(servers []MCPServer) {
+	m.mcpServers = servers
 }
 
 // StartSessionConfig holds parameters for starting a session.
@@ -73,6 +80,7 @@ func (m *SessionManager) StartSession(ctx context.Context, cfg StartSessionConfi
 		Agent:          cfg.AgentType,
 		WorkDir:        cfg.WorkDir,
 		PermissionMode: cfg.PermissionMode,
+		MCPServers:     m.mcpServers,
 	})
 	if err != nil {
 		return "", fmt.Errorf("creating ACP session: %w", err)

@@ -2,7 +2,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -400,6 +403,26 @@ func (r *SandboxReconciler) ensureNetworkPolicy(ctx context.Context, sandbox *fa
 		}
 	}
 
+	// Allow egress to each MCP server's port. NetworkPolicy can't filter by
+	// hostname, so this matches the existing EgressRules pattern: port-restrict
+	// against 0.0.0.0/0. Operators who need stricter isolation should pin
+	// MCP servers to in-cluster Services and add a tighter EgressRule.
+	for _, srv := range pool.Spec.SandboxTemplate.MCPServers {
+		port := mcpServerPort(srv.URL)
+		if port == 0 {
+			continue
+		}
+		p := intstr.FromInt32(port)
+		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
+			To: []networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Port: &p, Protocol: &protocolTCP},
+			},
+		})
+	}
+
 	policyTypes := []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}
 	netpol := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -581,6 +604,15 @@ func (r *SandboxReconciler) buildPod(sandbox *factoryv1alpha1.Sandbox, pool *fac
 		},
 	}
 
+	// Pass the Pool's MCP server endpoints to the bridge as JSON. The bridge
+	// forwards these to the SDK on session/new so the agent can call MCP tools.
+	if mcpJSON := encodeMCPServers(pool.Spec.SandboxTemplate.MCPServers); mcpJSON != "" {
+		bridgeContainer.Env = append(bridgeContainer.Env, corev1.EnvVar{
+			Name:  "MCP_SERVERS",
+			Value: mcpJSON,
+		})
+	}
+
 	// Apply health check from AgentConfig
 	if agentConfig.Spec.Bridge.HealthCheck != nil && agentConfig.Spec.Bridge.HealthCheck.HTTPGet != nil {
 		hc := agentConfig.Spec.Bridge.HealthCheck
@@ -667,6 +699,54 @@ func isPodReady(pod *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// encodeMCPServers marshals the Pool's MCP server list into the JSON shape the
+// bridge expects in MCP_SERVERS. Returns "" when there are no entries so the
+// env var is omitted entirely (the bridge treats unset and empty identically).
+func encodeMCPServers(servers []factoryv1alpha1.MCPServerEndpoint) string {
+	if len(servers) == 0 {
+		return ""
+	}
+	type entry struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	out := make([]entry, len(servers))
+	for i, s := range servers {
+		out[i] = entry{Name: s.Name, URL: s.URL}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// mcpServerPort returns the TCP port the agent will dial for the given MCP
+// server URL. Defaults to 80 for http, 443 for https when the URL omits a port.
+// Returns 0 if the URL is unparseable or uses an unsupported scheme — admission
+// validation (Pattern=^https?://) keeps this in practice unreachable.
+func mcpServerPort(rawURL string) int32 {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return 0
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 || n > 65535 {
+			return 0
+		}
+		return int32(n)
+	}
+	switch u.Scheme {
+	case "http":
+		return 80
+	case "https":
+		return 443
+	default:
+		return 0
+	}
 }
 
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
