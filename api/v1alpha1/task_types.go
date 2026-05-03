@@ -93,6 +93,16 @@ type TaskStatus struct {
 	// Attempts is the number of attempts made so far.
 	Attempts int32 `json:"attempts"`
 
+	// FailureReason indicates why the task failed, propagated from the
+	// session that ran it. Set only when Phase is Failed.
+	// +optional
+	FailureReason FailureReason `json:"failureReason,omitempty"`
+
+	// FailureMessage is a human-readable description of the failure,
+	// propagated from the session. Set only when Phase is Failed.
+	// +optional
+	FailureMessage string `json:"failureMessage,omitempty"`
+
 	// TokenUsage tracks token consumption for this task.
 	// +optional
 	TokenUsage *TokenUsage `json:"tokenUsage,omitempty"`

@@ -292,6 +292,40 @@ func TestGetTask(t *testing.T) {
 	}
 }
 
+func TestGetTask_FailureReasonAndMessage(t *testing.T) {
+	task := &factoryv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "failed-task", Namespace: "default"},
+		Spec:       factoryv1alpha1.TaskSpec{PoolRef: factoryv1alpha1.LocalObjectReference{Name: "pool1"}, Prompt: "x"},
+		Status: factoryv1alpha1.TaskStatus{
+			Phase:          factoryv1alpha1.TaskPhaseFailed,
+			FailureReason:  factoryv1alpha1.FailureReasonAuthError,
+			FailureMessage: "ACP session/new: Authentication required",
+		},
+	}
+	_, mux := testHandlers(task)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tasks/failed-task", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp TaskResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if resp.Phase != "Failed" {
+		t.Errorf("phase = %q, want Failed", resp.Phase)
+	}
+	if resp.FailureReason != "AuthError" {
+		t.Errorf("failureReason = %q, want AuthError", resp.FailureReason)
+	}
+	if resp.FailureMessage == "" {
+		t.Error("failureMessage should be present on failed task")
+	}
+}
+
 func TestGetTask_NotFound(t *testing.T) {
 	_, mux := testHandlers()
 
