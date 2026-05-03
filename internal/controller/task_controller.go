@@ -121,11 +121,15 @@ func (r *TaskReconciler) reconcileRunning(ctx context.Context, task *factoryv1al
 	}
 }
 
-// claimSandbox finds a Ready sandbox and atomically claims it. Retries up to
-// 3 times on conflict (the sandbox controller may update the sandbox concurrently).
+// claimSandbox finds an available sandbox and atomically claims it. Retries up
+// to 3 times on conflict (the sandbox controller may update the sandbox
+// concurrently). An "available" sandbox is one in Ready phase OR Idle phase
+// (released by a previous task, still warm) — claiming an Idle sandbox is
+// what realises the Pool's warm-pool intent: the next task gets sub-second
+// startup instead of waiting for sandbox creation.
 func (r *TaskReconciler) claimSandbox(ctx context.Context, task *factoryv1alpha1.Task) (*factoryv1alpha1.Sandbox, error) {
 	for attempt := 0; attempt < 3; attempt++ {
-		sandbox, err := r.findReadySandbox(ctx, task)
+		sandbox, err := r.findAvailableSandbox(ctx, task)
 		if err != nil {
 			return nil, err
 		}
@@ -133,8 +137,12 @@ func (r *TaskReconciler) claimSandbox(ctx context.Context, task *factoryv1alpha1
 			return nil, nil
 		}
 
+		now := metav1.Now()
 		sandbox.Status.Phase = factoryv1alpha1.SandboxPhaseAssigned
 		sandbox.Status.AssignedTask = task.Name
+		// Refresh activity timestamp so the sandbox controller's idle-aging
+		// logic doesn't fire mid-task on a sandbox we just claimed out of Idle.
+		sandbox.Status.LastActivityAt = &now
 		if err := r.Status().Update(ctx, sandbox); err != nil {
 			if errors.IsConflict(err) {
 				continue // Retry with a fresh sandbox lookup
@@ -143,7 +151,6 @@ func (r *TaskReconciler) claimSandbox(ctx context.Context, task *factoryv1alpha1
 		}
 
 		// Update task status with sandbox ref.
-		now := metav1.Now()
 		task.Status.Phase = factoryv1alpha1.TaskPhaseRunning
 		task.Status.SandboxRef = &factoryv1alpha1.LocalObjectReference{Name: sandbox.Name}
 		task.Status.StartedAt = &now
@@ -159,20 +166,38 @@ func (r *TaskReconciler) claimSandbox(ctx context.Context, task *factoryv1alpha1
 	return nil, nil
 }
 
-func (r *TaskReconciler) findReadySandbox(ctx context.Context, task *factoryv1alpha1.Task) (*factoryv1alpha1.Sandbox, error) {
+// findAvailableSandbox returns a sandbox in this Pool that's either Ready or
+// Idle. Idle sandboxes are warm (released by a previous task) and claiming
+// one avoids the sandbox-creation cost. Without this, an Idle sandbox blocks
+// the Pool from creating a replacement (it counts toward min replicas) while
+// also being unclaimable — tasks would queue until the idle timeout fires.
+func (r *TaskReconciler) findAvailableSandbox(ctx context.Context, task *factoryv1alpha1.Task) (*factoryv1alpha1.Sandbox, error) {
 	var sandboxList factoryv1alpha1.SandboxList
 	if err := r.List(ctx, &sandboxList, client.InNamespace(task.Namespace)); err != nil {
 		return nil, fmt.Errorf("listing sandboxes: %w", err)
 	}
 
+	// Prefer Ready over Idle to keep warmer sandboxes around for short-burst
+	// workloads, but fall back to Idle when no Ready sandbox is available.
+	var idle *factoryv1alpha1.Sandbox
 	for i := range sandboxList.Items {
 		sb := &sandboxList.Items[i]
-		if sb.Spec.PoolRef.Name == task.Spec.PoolRef.Name && sb.Status.Phase == factoryv1alpha1.SandboxPhaseReady {
+		if sb.Spec.PoolRef.Name != task.Spec.PoolRef.Name {
+			continue
+		}
+		switch sb.Status.Phase {
+		case factoryv1alpha1.SandboxPhaseReady:
 			return sb, nil
+		case factoryv1alpha1.SandboxPhaseIdle:
+			if idle == nil {
+				idle = sb
+			}
+		case factoryv1alpha1.SandboxPhaseCreating, factoryv1alpha1.SandboxPhaseAssigned,
+			factoryv1alpha1.SandboxPhaseActive, factoryv1alpha1.SandboxPhaseTerminating:
+			// Not claimable — already busy or going away.
 		}
 	}
-
-	return nil, nil
+	return idle, nil
 }
 
 func (r *TaskReconciler) ensureSession(ctx context.Context, task *factoryv1alpha1.Task) (ctrl.Result, error) {
