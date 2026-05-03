@@ -369,7 +369,7 @@ func TestSandboxReconciler_Reconcile(t *testing.T) {
 				return
 			}
 
-			if tt.wantRequeue && result.RequeueAfter == 0 && !result.Requeue {
+			if tt.wantRequeue && result.RequeueAfter == 0 {
 				t.Error("expected requeue but got none")
 			}
 

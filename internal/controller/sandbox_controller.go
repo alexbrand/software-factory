@@ -178,7 +178,7 @@ func (r *SandboxReconciler) reconcileRunning(ctx context.Context, sandbox *facto
 			if err := r.Status().Update(ctx, sandbox); err != nil {
 				return ctrl.Result{}, fmt.Errorf("updating sandbox status: %w", err)
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("getting pod: %w", err)
 	}
@@ -215,7 +215,7 @@ func (r *SandboxReconciler) reconcileIdle(ctx context.Context, sandbox *factoryv
 		if err := r.Status().Update(ctx, sandbox); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating sandbox status to terminating: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
 
 	remaining := timeout - elapsed

@@ -73,7 +73,7 @@ func (r *TaskReconciler) reconcilePending(ctx context.Context, task *factoryv1al
 	}
 
 	// Sandbox claimed and task updated by claimSandbox. Requeue to create session.
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 }
 
 func (r *TaskReconciler) reconcileRunning(ctx context.Context, task *factoryv1alpha1.Task) (ctrl.Result, error) {
@@ -258,7 +258,7 @@ func (r *TaskReconciler) handleSessionResult(ctx context.Context, task *factoryv
 			if err := r.Status().Update(ctx, task); err != nil {
 				return ctrl.Result{}, fmt.Errorf("clearing session ref for retry: %w", err)
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 		}
 
 		// Exceeded retries, fail the task.

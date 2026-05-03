@@ -4,7 +4,7 @@
 
 # Tool versions
 CONTROLLER_GEN_VERSION ?= v0.17.2
-GOLANGCI_LINT_VERSION ?= v1.64.8
+GOLANGCI_LINT_VERSION ?= v2.12.1
 
 # Binaries
 CONTROLLER_GEN ?= $(shell which controller-gen 2>/dev/null)
@@ -93,7 +93,10 @@ endif
 .PHONY: golangci-lint
 golangci-lint: ## Install golangci-lint if not present
 ifeq (,$(GOLANGCI_LINT))
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	# Force the build to use the project's Go toolchain so the linter binary
+	# isn't older than the targeted Go version (go1.26 in go.mod).
+	GOTOOLCHAIN=$(shell awk '/^go /{print "go"$$2}' go.mod) \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	$(eval GOLANGCI_LINT := $(GOBIN)/golangci-lint)
 endif
 
