@@ -124,6 +124,111 @@ func TestTaskReconciler_PendingClaimsSandbox(t *testing.T) {
 	}
 }
 
+// TestTaskReconciler_PendingClaimsIdleSandbox asserts the warm-pool intent:
+// when no Ready sandbox is available but an Idle one exists (released by a
+// previous task), a new task can claim it instead of waiting for the idle
+// timeout to fire and the Pool to spin up a fresh sandbox.
+func TestTaskReconciler_PendingClaimsIdleSandbox(t *testing.T) {
+	scheme := newScheme()
+	task := newTask("test-task", "default", "test-pool")
+
+	twoMinAgo := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	sb := &factoryv1alpha1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: "sb-idle", Namespace: "default"},
+		Spec: factoryv1alpha1.SandboxSpec{
+			PoolRef:        factoryv1alpha1.LocalObjectReference{Name: "test-pool"},
+			AgentConfigRef: factoryv1alpha1.LocalObjectReference{Name: "agent"},
+		},
+		Status: factoryv1alpha1.SandboxStatus{
+			Phase:          factoryv1alpha1.SandboxPhaseIdle,
+			LastActivityAt: &twoMinAgo,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task, sb).
+		WithStatusSubresource(&factoryv1alpha1.Task{}, &factoryv1alpha1.Sandbox{}, &factoryv1alpha1.Session{}).
+		Build()
+
+	r := &TaskReconciler{Client: fakeClient, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-task", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var updated factoryv1alpha1.Sandbox
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "sb-idle", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("fetching sandbox: %v", err)
+	}
+	if updated.Status.Phase != factoryv1alpha1.SandboxPhaseAssigned {
+		t.Errorf("Idle sandbox should have been claimed; phase = %s", updated.Status.Phase)
+	}
+	if updated.Status.AssignedTask != "test-task" {
+		t.Errorf("AssignedTask = %q, want test-task", updated.Status.AssignedTask)
+	}
+	// LastActivityAt must be refreshed on claim so the idle-aging logic
+	// in the sandbox controller doesn't fire mid-task.
+	if updated.Status.LastActivityAt == nil || !updated.Status.LastActivityAt.After(twoMinAgo.Time) {
+		t.Errorf("LastActivityAt should be refreshed on claim, got %v (was %v)", updated.Status.LastActivityAt, twoMinAgo)
+	}
+
+	var updatedTask factoryv1alpha1.Task
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "test-task", Namespace: "default"}, &updatedTask); err != nil {
+		t.Fatalf("fetching task: %v", err)
+	}
+	if updatedTask.Status.Phase != factoryv1alpha1.TaskPhaseRunning {
+		t.Errorf("task phase = %s, want Running", updatedTask.Status.Phase)
+	}
+	if updatedTask.Status.SandboxRef == nil || updatedTask.Status.SandboxRef.Name != "sb-idle" {
+		t.Errorf("expected sandbox ref sb-idle, got %v", updatedTask.Status.SandboxRef)
+	}
+}
+
+// TestTaskReconciler_PrefersReadyOverIdle asserts that when both Ready and
+// Idle sandboxes are available, Ready is preferred. Idle is the fallback.
+func TestTaskReconciler_PrefersReadyOverIdle(t *testing.T) {
+	scheme := newScheme()
+	task := newTask("test-task", "default", "test-pool")
+
+	idleSb := &factoryv1alpha1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: "sb-idle", Namespace: "default"},
+		Spec:       factoryv1alpha1.SandboxSpec{PoolRef: factoryv1alpha1.LocalObjectReference{Name: "test-pool"}},
+		Status:     factoryv1alpha1.SandboxStatus{Phase: factoryv1alpha1.SandboxPhaseIdle},
+	}
+	readySb := &factoryv1alpha1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: "sb-ready", Namespace: "default"},
+		Spec:       factoryv1alpha1.SandboxSpec{PoolRef: factoryv1alpha1.LocalObjectReference{Name: "test-pool"}},
+		Status:     factoryv1alpha1.SandboxStatus{Phase: factoryv1alpha1.SandboxPhaseReady},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task, idleSb, readySb).
+		WithStatusSubresource(&factoryv1alpha1.Task{}, &factoryv1alpha1.Sandbox{}, &factoryv1alpha1.Session{}).
+		Build()
+
+	r := &TaskReconciler{Client: fakeClient, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-task", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var updatedIdle factoryv1alpha1.Sandbox
+	_ = fakeClient.Get(context.Background(), types.NamespacedName{Name: "sb-idle", Namespace: "default"}, &updatedIdle)
+	if updatedIdle.Status.Phase != factoryv1alpha1.SandboxPhaseIdle {
+		t.Errorf("Idle sandbox should be untouched, got phase %s", updatedIdle.Status.Phase)
+	}
+
+	var updatedReady factoryv1alpha1.Sandbox
+	_ = fakeClient.Get(context.Background(), types.NamespacedName{Name: "sb-ready", Namespace: "default"}, &updatedReady)
+	if updatedReady.Status.Phase != factoryv1alpha1.SandboxPhaseAssigned {
+		t.Errorf("Ready sandbox should have been claimed, got phase %s", updatedReady.Status.Phase)
+	}
+}
+
 func TestTaskReconciler_RunningSessionCompleted(t *testing.T) {
 	scheme := newScheme()
 	now := metav1.Now()
