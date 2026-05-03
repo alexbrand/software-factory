@@ -153,12 +153,13 @@ This is inspired by Cloudflare Dynamic Workers' `globalOutbound` pattern.
 
 ### Layer 5: MCP Tool-Level Access Control
 
-When agents use MCP tools (databases, APIs, external services), access is controlled through [ToolHive](https://github.com/stacklok/toolhive) VirtualMCPServer (vMCP) instances:
+When agents use MCP tools (databases, APIs, external services), access is controlled at the Pool level:
 
-1. **Per-tenant tool curation**: Each tenant namespace gets its own `MCPGroup` + `VirtualMCPServer`. The vMCP exposes only the specific tools that tenant is authorized to use — not the full surface area of every connected MCP server.
-2. **Secret isolation for MCP servers**: MCP server credentials (database passwords, API tokens) are managed by ToolHive and injected into MCP server containers — never exposed to the agent or its sandbox.
-3. **Audit logging**: ToolHive logs all tool invocations through vMCP, providing an audit trail of which agents called which tools with what parameters.
-4. **Token optimization**: vMCP's embedded optimizer surfaces only relevant tools per request, reducing the attack surface from prompt injection by limiting which tools appear in the agent's context.
+1. **Per-tenant tool curation**: Each Pool defines the specific MCP server endpoints its sandboxes can access via `mcpServers`. Agents only see tools from those endpoints — not every MCP server in the cluster.
+2. **Secret isolation**: MCP server credentials (database passwords, API tokens) are managed by the MCP server deployment, not by the agent sandbox. The agent calls tools via the MCP protocol — it never sees the credentials the MCP server uses to connect to backends.
+3. **Network isolation**: Sandbox NetworkPolicies restrict which MCP endpoints are reachable. An agent can only call tools at the endpoints listed in its Pool.
+
+For production deployments with many MCP servers, [ToolHive](https://github.com/stacklok/toolhive) provides additional capabilities: tool aggregation via VirtualMCPServer (vMCP), tool-level RBAC, conflict resolution across servers, audit logging of tool invocations, and token optimization to reduce the attack surface from prompt injection.
 
 ## RBAC
 

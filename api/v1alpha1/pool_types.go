@@ -50,9 +50,11 @@ type SandboxTemplate struct {
 	// +optional
 	Warmup *WarmupConfig `json:"warmup,omitempty"`
 
-	// MCPTools configures MCP tool access via ToolHive.
+	// MCPServers defines MCP tool endpoints available to sandboxes in this pool.
 	// +optional
-	MCPTools *MCPToolsConfig `json:"mcpTools,omitempty"`
+	// +listType=map
+	// +listMapKey=name
+	MCPServers []MCPServerEndpoint `json:"mcpServers,omitempty"`
 
 	// NetworkPolicy defines network access rules for sandboxes.
 	// +optional
@@ -102,10 +104,17 @@ type GitRepoConfig struct {
 	Path *string `json:"path,omitempty"`
 }
 
-// MCPToolsConfig configures MCP tool access.
-type MCPToolsConfig struct {
-	// VMCPRef references a VirtualMCPServer in the same namespace.
-	VMCPRef LocalObjectReference `json:"vmcpRef"`
+// MCPServerEndpoint defines an MCP server available to sandboxes.
+type MCPServerEndpoint struct {
+	// Name is a human-readable identifier for this MCP server.
+	// Must be unique within the pool's MCPServers list.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// URL is the endpoint where the MCP server is reachable.
+	// Must be an http:// or https:// URL.
+	// +kubebuilder:validation:Pattern=`^https?://`
+	URL string `json:"url"`
 }
 
 // NetworkPolicyConfig defines network access rules.

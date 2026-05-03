@@ -50,8 +50,8 @@ The system follows a layered architecture built on Kubernetes primitives. Each l
 │  │ Runtime  │ │ (Volumes)│ │(Network) │ │  (NATS/CloudEvts) │  │
 │  └──────────┘ └──────────┘ └──────────┘ └───────────────────┘  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  ToolHive (MCP Tool Layer)                                │   │
-│  │  vMCP Services ← MCPGroups ← MCPServer pods              │   │
+│  │  MCP Tool Layer (optional)                                │   │
+│  │  MCP server endpoints (ToolHive, manual, or external)     │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -125,7 +125,7 @@ We chose NATS because it is a CNCF incubating project with excellent Go support,
 | Container runtime | containerd | CNCF graduated, standard K8s runtime |
 | Storage | CSI-compatible | Pluggable persistent volumes |
 | Networking | CNI + NetworkPolicy | Standard K8s network isolation |
-| MCP tools | ToolHive (optional) | K8s-native MCP server management, vMCP aggregation, tool-level RBAC |
+| MCP tools | Any MCP-compatible endpoint (ToolHive recommended) | Pool defines MCP server URLs; bridge passes to SDK |
 | Agent adapter | Sandbox Agent SDK | Universal agent interface (6 agents), runs as Rust binary in sandbox |
 | CI/CD | Tekton (optional) | CNCF project for pipeline integration |
 
