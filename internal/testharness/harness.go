@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	factoryv1alpha1 "github.com/alexbrand/software-factory/api/v1alpha1"
 	"github.com/alexbrand/software-factory/internal/apiserver"
@@ -142,6 +143,11 @@ func (h *Harness) startKubernetes() {
 		Controller: ctrlconfig.Controller{
 			SkipNameValidation: &skipNameValidation,
 		},
+		// Disable the metrics server. Default :8080 collides with whatever
+		// developer service is listening on that port and crashes the manager
+		// silently — controllers never start, the cache stalls, every cached
+		// List eventually times out.
+		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
 		h.t.Fatalf("creating manager: %v", err)
